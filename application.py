@@ -6,6 +6,7 @@ from PySide2.QtGui import *
 
 import sys
 import time
+import math
 
 from autobahn.twisted.websocket import WebSocketServerProtocol, WebSocketServerFactory, listenWS
 from twisted.internet import reactor
@@ -14,20 +15,15 @@ from twisted.web.server import Site
 from twisted.web.static import File
 
 import json
-import serial
 import os
 import urllib.request, urllib.error, urllib.parse
 import webbrowser
-import unicodecsv
 import glob
 
 import numpy
 import cv2
 from cv2 import * # OpenCV imports
 import psutil # CPU usage
-import subprocess # ssocr command line calling
-import re # Integers only from ssocr output
-import requests
 
 if getattr(sys, 'frozen', False):
 	_applicationPath = os.path.dirname(sys.executable)
@@ -35,7 +31,6 @@ elif __file__:
 	_applicationPath = os.path.dirname(__file__)
 
 _settingsFilePath = os.path.join(_applicationPath, 'settings.ini')
-_athleteDataFilePath = os.path.join(_applicationPath, 'athlete_data.csv')
 
 GroupBoxStyleSheet = "QGroupBox { border: 1px solid #AAAAAA;margin-top: 12px;} QGroupBox::title {top: -5px;left: 10px;}"
 
@@ -51,8 +46,6 @@ def shiftImage(in_img, x, y):
 	else:
 		_img = copyMakeBorder(_img,abs(y),0,0,0,BORDER_CONSTANT, value=[255,255,255])
 	return _img
-
-
 
 def autocrop(image, threshold=0):
 	"""Crops any edges below or equal to threshold
@@ -78,6 +71,39 @@ def autocrop(image, threshold=0):
 
 	return image
 
+DIGITS_LOOKUP = {
+    (1, 1, 1, 1, 1, 1, 0): 0,
+    (0, 1, 1, 0, 0, 0, 0): 1,
+    (1, 1, 0, 1, 1, 0, 1): 2,
+    (1, 1, 1, 1, 0, 0, 1): 3,
+    (0, 1, 1, 0, 0, 1, 1): 4,
+    (1, 0, 1, 1, 0, 1, 1): 5,
+    (1, 0, 1, 1, 1, 1, 1): 6,
+    (1, 1, 1, 0, 0, 0, 0): 7,
+    (1, 1, 1, 1, 1, 1, 1): 8,
+    (1, 1, 1, 0, 0, 1, 1): 9,
+    (0, 0, 0, 0, 0, 0, 0): ''
+}
+
+def parseSingleDigit(segment_image, previous_digit):
+	##### check for individual elements #####
+		# seg A - 0:20, 20:30, # seg B - 20:30, 30:50, # seg C - 40:50, 30:50, # seg D - 50:70, 20:30, # seg E - 40:50, 0:20, # seg F - 20:30, 0:20, # seg G - 30:40, 20:30	
+	segments = {
+		"a": numpy.mean(segment_image[0:20,20:30]) < 200,
+		"b": numpy.mean(segment_image[20:30,30:50]) < 200,
+		"c": numpy.mean(segment_image[40:50,30:50]) < 200,
+		"d": numpy.mean(segment_image[50:70,20:30]) < 200,
+		"e": numpy.mean(segment_image[40:50,0:20]) < 200,
+		"f": numpy.mean(segment_image[20:30,0:20]) < 200,
+		"g": numpy.mean(segment_image[30:40,20:30]) < 200
+	}
+
+	if tuple(segments.values()) in DIGITS_LOOKUP.keys():
+		digit = DIGITS_LOOKUP[tuple(segments.values())]
+	else:
+		digit = previous_digit
+
+	return digit
 
 class MainWindow(QtWidgets.QMainWindow):
 	def __init__(self, parent=None):
@@ -108,7 +134,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.main_widget = Window(self)
 		self.setCentralWidget(self.main_widget)
 		self.statusBar()
-		self.setWindowTitle('Basketball OCR and TV Graphic Control')
+		self.setWindowTitle('Score OCR and TV Graphic Control')
 		self.resize(1000,400)
 		self.show()
 
@@ -123,19 +149,6 @@ class Window(QtWidgets.QWidget):
 		self.updateScoreboard = QtWidgets.QPushButton("Update")
 		self.updateScoreboard.clicked.connect(self.sendCommandToBrowser)
 
-		self.teamAImagePath = QtWidgets.QLineEdit("")
-		self.teamAColor = QtWidgets.QLineEdit("")
-		self.teamBImagePath = QtWidgets.QLineEdit("")
-		self.teamBColor = QtWidgets.QLineEdit("")
-		self.gameID = QtWidgets.QLineEdit("")
-
-		self.tickerRadioGroup = QtWidgets.QButtonGroup()
-		self.tickerTextRadio = QtWidgets.QRadioButton("Text")
-		self.tickerStatsRadio = QtWidgets.QRadioButton("Player Stats")
-		self.tickerTextLineEdit = QtWidgets.QLineEdit("")
-		self.gameOverCheckBox = QtWidgets.QCheckBox("Game Over")
-
-
 		self.GCOCRCoordinates = {
 			"clock_1": [QtWidgets.QLabel("Clock *0:00"), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLabel("0"), QtWidgets.QLabel("0"), QtWidgets.QLabel("*"), QtWidgets.QLabel("-")],
 			"clock_2": [QtWidgets.QLabel("Clock 0*:00"), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLabel("0"), QtWidgets.QLabel("0"), QtWidgets.QLabel("*"), QtWidgets.QLabel("-")],
@@ -149,7 +162,9 @@ class Window(QtWidgets.QWidget):
 
 		self.SCssocrArguments = QtWidgets.QLineEdit(self.qsettings.value("SCssocrArguments", "crop 0 0 450 200 mirror horiz shear 10 mirror horiz gray_stretch 100 254 invert remove_isolated -T "))
 		self.SCrotation = QtWidgets.QLineEdit(self.qsettings.value("SCrotation", "0"))
+		self.SCskewx = QtWidgets.QLineEdit(self.qsettings.value("SCskewx", "5"))
 		self.SCerosion = QtWidgets.QLineEdit(self.qsettings.value("SCerosion", "2"))
+		self.SCthreshold = QtWidgets.QLineEdit(self.qsettings.value("SCthreshold", "127"))
 		self.SCcropLeft = QtWidgets.QLineEdit(self.qsettings.value("LCrop", "0"))
 		self.SCcropTop = QtWidgets.QLineEdit(self.qsettings.value("TCrop", "0"))
 		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
@@ -158,6 +173,12 @@ class Window(QtWidgets.QWidget):
 		self.startSCOCRButton.clicked.connect(self.init_SCOCRWorker)
 		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
 		self.terminateSCOCRButton.clicked.connect(self.terminate_SCOCRWorker)
+
+		self.slider_skewx = QtWidgets.QSlider()
+		self.slider_skewx.setOrientation(Qt.Horizontal)
+		self.slider_skewx.setMinimum(-90)
+		self.slider_skewx.setMaximum(90)
+		self.slider_skewx.setValue(int(self.qsettings.value("SCskewx", "5")))
 
 		self.previewImageRaw = QtWidgets.QLabel("")
 		self.previewImageProcessed = QtWidgets.QLabel("")
@@ -168,8 +189,6 @@ class Window(QtWidgets.QWidget):
 
 		self.initializeOCRCoordinatesList()
 
-		grid.addWidget(self.createTeamNameGroup(), 0, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.createTickerGraphicGroup(), 2, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.createGC_OCR_Group(), 0, 2, 4, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.createParametersGroup(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.createCameraPreviewGroup(), 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
@@ -227,14 +246,13 @@ class Window(QtWidgets.QWidget):
 		print(msg)
 		self.webSocketsWorker.send(json.dumps(msg));
 
-
 	def init_WebSocketsWorker(self):
 		self.webSocketsWorker = WebSocketsWorker()
 		self.webSocketsWorker.error.connect(self.close)
 		self.webSocketsWorker.start()# Call to start WebSockets server
 
 	def init_SCOCRWorker(self):
-		self.SCOCRWorker = SCOCRWorker(self.returnOCRCoordinatesList(), self.SCssocrArguments.text(), self.SCwaitKey.text(), self.SCvideoCaptureIndex.text(), self.SCrotation.text(), self.SCerosion.text(), self.SCcropLeft.text(), self.SCcropTop.text())
+		self.SCOCRWorker = SCOCRWorker(self.returnOCRCoordinatesList(), self.SCssocrArguments.text(), self.SCwaitKey.text(), self.SCvideoCaptureIndex.text(), self.SCrotation.text(), self.SCskewx.text(), self.SCerosion.text(), self.SCthreshold.text(), self.SCcropLeft.text(), self.SCcropTop.text())
 		self.SCOCRWorker.error.connect(self.close)
 		self.SCOCRWorker.recognizedDigits.connect(self.SCOCRhandler)
 		self.SCOCRWorker.processedFrameFlag.connect(lambda: self.CPUpercentage.setText('CPU: ' + str(psutil.cpu_percent()) + "%"))
@@ -248,8 +266,8 @@ class Window(QtWidgets.QWidget):
 	def SCOCRPreviewImageHandler(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
-		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
 	def SCOCRhandler(self, digitDict): # Receives [self.digitL, self.digitR] from SCOCRWorker
 		self.GCOCRCoordinates["clock_1"][8].setText(str(digitDict["clock_1"]))
@@ -290,50 +308,6 @@ class Window(QtWidgets.QWidget):
 				response[key][index] = qobj.text()
 
 		return response
-		
-	def createTickerGraphicGroup(self):
-		groupBox = QtWidgets.QGroupBox("Ticker")
-		groupBox.setStyleSheet(GroupBoxStyleSheet)
-
-		self.tickerRadioGroup.setExclusive(True)
-		self.tickerRadioGroup.addButton(self.tickerTextRadio, 0)
-		#self.tickerRadioGroup.addButton(self.tickerStatsRadio, 1)
-		self.tickerRadioGroup.button(0).setChecked(True)
-
-		grid = QtWidgets.QGridLayout()
-		grid.setHorizontalSpacing(10)
-		grid.setVerticalSpacing(10)
-		grid.addWidget(self.tickerTextRadio, 2, 0)
-		grid.addWidget(self.tickerTextLineEdit, 3, 0, 1, 2)
-		grid.addWidget(self.gameOverCheckBox, 4, 0)
-		#grid.addWidget(self.tickerStatsRadio, 4, 0)
-
-		groupBox.setLayout(grid)
-		return groupBox
-
-	def createTeamNameGroup(self):
-		groupBox = QtWidgets.QGroupBox("Teams")
-		groupBox.setStyleSheet(GroupBoxStyleSheet)
-
-		grid = QtWidgets.QGridLayout()
-		grid.setHorizontalSpacing(10)
-		grid.setVerticalSpacing(5)
-
-		grid.addWidget(QtWidgets.QLabel("Image URL"), 0, 2)
-		grid.addWidget(QtWidgets.QLabel("Color #Hex "), 0, 3)
-		grid.addWidget(QtWidgets.QLabel("Guest"), 1, 0)
-		grid.addWidget(self.teamAImagePath, 1, 2)
-		grid.addWidget(self.teamAColor, 1, 3)
-		grid.addWidget(QtWidgets.QLabel("Home"), 2, 0)
-		grid.addWidget(self.teamBImagePath, 2, 2)
-		grid.addWidget(self.teamBColor, 2, 3)
-		grid.addWidget(QtWidgets.QLabel("Game ID"), 3, 0)
-		grid.addWidget(self.gameID, 3, 1, 1, 3)
-
-		grid.setColumnStretch(0,5)
-		grid.setColumnStretch(1,100)
-		groupBox.setLayout(grid)
-		return groupBox
 
 	def widthHeightAutoFiller(self): # Calculates width and height, then saves to settings.ini file
 		for key, value in self.GCOCRCoordinates.items():
@@ -347,6 +321,8 @@ class Window(QtWidgets.QWidget):
 		self.qsettings.setValue("OCRcoordinates", self.returnOCRCoordinatesList())
 		self.qsettings.setValue("SCssocrArguments", self.SCssocrArguments.text())
 		self.qsettings.setValue("SCrotation", self.SCrotation.text())
+		self.qsettings.setValue("SCskewx", self.SCskewx.text())
+		self.qsettings.setValue("SCThreshold", self.SCthreshold.text())
 		self.qsettings.setValue("SCerosion", self.SCerosion.text())
 		self.qsettings.setValue("TCrop", self.SCcropTop.text())
 		self.qsettings.setValue("LCrop", self.SCcropLeft.text())
@@ -357,6 +333,8 @@ class Window(QtWidgets.QWidget):
 			self.SCOCRWorker.importOCRCoordinates(self.returnOCRCoordinatesList())
 			self.SCOCRWorker.ssocrArguments = self.SCssocrArguments.text()
 			self.SCOCRWorker.rotation = int(self.SCrotation.text())
+			self.SCOCRWorker.skewx = int(self.SCskewx.text())
+			self.SCOCRWorker.threshold = int(self.SCthreshold.text())
 			self.SCOCRWorker.erosion = int(self.SCerosion.text())
 			self.SCOCRWorker.cropLeft = int(self.SCcropLeft.text())
 			self.SCOCRWorker.cropTop = int(self.SCcropTop.text())
@@ -452,27 +430,36 @@ class Window(QtWidgets.QWidget):
 		grid.setVerticalSpacing(5)
 
 		grid.addWidget(QtWidgets.QLabel("Rotation"), 0, 0, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Erosions"), 0, 1, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Top Crop"), 0, 2, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Left Crop"), 0, 3, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Skew X"), 0, 1, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Threshold"), 0, 2, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Erosions"), 0, 3, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Top Crop"), 0, 4, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Left Crop"), 0, 5, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("WaitKey"), 2, 0)
 		grid.addWidget(QtWidgets.QLabel("Webcam Index"), 2, 1)
 		grid.addWidget(self.SCrotation, 1, 0, 1, 1)
-		grid.addWidget(self.SCerosion, 1, 1, 1, 1)
-		grid.addWidget(self.SCcropTop, 1, 2, 1, 1)
-		grid.addWidget(self.SCcropLeft, 1, 3, 1, 1)
+		grid.addWidget(self.SCskewx, 1, 1, 1, 1)
+		grid.addWidget(self.SCthreshold, 1, 2, 1, 1)
+		grid.addWidget(self.SCerosion, 1, 3, 1, 1)
+		grid.addWidget(self.SCcropTop, 1, 4, 1, 1)
+		grid.addWidget(self.SCcropLeft, 1, 5, 1, 1)
 		grid.addWidget(self.SCwaitKey, 3, 0)
 		grid.addWidget(self.SCvideoCaptureIndex, 3, 1)
 		grid.addWidget(self.startSCOCRButton, 3, 2)
 		grid.addWidget(self.terminateSCOCRButton, 3, 3)
+		grid.addWidget(self.slider_skewx, 4, 0, columnSpan=-1)
 
 		self.SCssocrArguments.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCrotation.editingFinished.connect(self.widthHeightAutoFiller)
+		self.SCskewx.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCerosion.editingFinished.connect(self.widthHeightAutoFiller)
+		self.SCthreshold.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCwaitKey.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCvideoCaptureIndex.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCcropLeft.editingFinished.connect(self.widthHeightAutoFiller)
 		self.SCcropTop.editingFinished.connect(self.widthHeightAutoFiller)
+
+		self.slider_skewx.valueChanged.connect(self.widthHeightAutoFiller)
 
 		grid.setColumnStretch(0,50)
 		grid.setColumnStretch(1,25)
@@ -583,7 +570,7 @@ class WebSocketsWorker(QtCore.QThread):
 	def run(self):
 		self.factory.protocol = self.BroadcastServerProtocol
 		try:
-			 listenWS(self.factory)
+			listenWS(self.factory)
 		except:
 			self.error.emit("Fail")
 		webdir = File(_applicationPath)
@@ -600,6 +587,13 @@ class WebSocketsWorker(QtCore.QThread):
 		reactor.callFromThread(self.factory.broadcast, data)
 		self.updateProgress.emit([self.factory.returnClients()])
 
+class SingleDigit():
+	def __init__(self, name):
+		self.name = name
+		self.coords = []
+		self.value = ""
+		self.enabled = False
+
 
 class SCOCRWorker(QtCore.QThread):
 	error = QtCore.Signal(int)
@@ -607,7 +601,7 @@ class SCOCRWorker(QtCore.QThread):
 	QImageFrame = QtCore.Signal(list)
 	processedFrameFlag = QtCore.Signal(int)
 
-	def __init__(self, OCRCoordinatesList, ssocrArguments, waitKey, videoCaptureIndex, rotation, erosion, cropLeft, cropTop):
+	def __init__(self, OCRCoordinatesList, ssocrArguments, waitKey, videoCaptureIndex, rotation, skewx, erosion, threshold, cropLeft, cropTop):
 		QtCore.QThread.__init__(self)
 
 		self.ssocrArguments = ssocrArguments
@@ -615,14 +609,14 @@ class SCOCRWorker(QtCore.QThread):
 		self.coords = OCRCoordinatesList
 		self.videoCaptureIndex = videoCaptureIndex
 		self.rotation = int(rotation)
+		self.skewx = int(skewx)
 		self.erosion = int(erosion)
+		self.threshold = int(threshold)
 		self.cropLeft = int(cropLeft)
 		self.cropTop = int(cropTop)
 		self.mouse_coordinates = [0, 0]
-		self.referenceDigits = None
 		self.cam = None # VideoCapture object, created in run()
 		
-		self.loadReferenceMatrices()
 		self.retOCRDigits  = {
 			"clock_1": "",
 			"clock_2": "",
@@ -634,118 +628,22 @@ class SCOCRWorker(QtCore.QThread):
 			"shot_clock_decimal": ""
 		}
 
-	def mouse_hover_coordinates(self, event, x, y, flags, param):
-		if event == EVENT_MOUSEMOVE:
-			self.mouse_coordinates = [x, y]
+		self.digit1 = SingleDigit("clock_1")
 
-	def loadReferenceMatrices(self):
-		self.referenceDigits = [
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/0A.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/0B.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/0C.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/0D.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/0E.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_1.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_2.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_3.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_4.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_5.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_6.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_7.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_8.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_9.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_10.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_11.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_12.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_13.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_14.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_15.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_16.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_17.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_18.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_19.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_20.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_21.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_22.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_23.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_24.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_25.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_26.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_27.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_28.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_29.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_30.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_31.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_32.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_33.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_34.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_35.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_36.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_37.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_38.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_39.png'), 0),
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_40.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_41.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_42.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_43.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_44.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_45.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_46.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_47.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_48.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_49.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_50.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_51.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/1_52.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/2A.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/2B.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/2C.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/2D.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/3A.png'), 0) 
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/4A.png'), 0) 
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/5A.png'), 0) 
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6A.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6B.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6C.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6D.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6E.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/6F.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/7A.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/7B.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/8A.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9A.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9B.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9C.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9D.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9E.png'), 0), 
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9F.png'), 0),
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/9G.png'), 0)
-			],
-			[
-			cv2.imread(os.path.join(_applicationPath, 'ref_digits/blank.png'), 0)
-			]
-		]
+	def mouse_hover_coordinates(self, event, x, y, flags, param):
+		if event == cv2.EVENT_MOUSEMOVE:
+			self.mouse_coordinates = [x, y]
+	
 	def importOCRCoordinates(self, OCRCoordinatesList):
 		self.coords = OCRCoordinatesList
+
+	def processSingleDigit(self, inputImage, coords):
+		croppedImage = inputImage[int('0' + coords[2]):int('0' + coords[4]), int('0' + coords[1]):int('0' + coords[3])]
+		croppedImage = autocrop(cv2.threshold(croppedImage, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
+
+		processedDigitImage = cv2.resize(croppedImage, (50, 70), 1, 1, cv2.INTER_NEAREST)
+
+		return processedDigitImage
 
 	def kill(self):
 		self._isRunning = False
@@ -755,22 +653,20 @@ class SCOCRWorker(QtCore.QThread):
 		try:
 			#self.cam = VideoCapture(int(self.videoCaptureIndex))   # 0 -> index of camera
 
-			self.cam.set(cv2.CAP_PROP_POS_FRAMES, 100)					# run from frame 100
+			#self.cam.set(cv2.CAP_PROP_POS_FRAMES, 100)					# run from frame 100
 			self.cam = cv2.VideoCapture('test_images/test_video.mp4')	# start video
 
 			print("Webcam native resolution: ", self.cam.get(cv2.CAP_PROP_FRAME_WIDTH), self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
 			self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
 			self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
 
-			cv2.namedWindow("Source Video", cv2.WINDOW_AUTOSIZE)
 			cv2.namedWindow("Bounding Boxes", cv2.WINDOW_AUTOSIZE)
-			cv2.namedWindow("Test 1", cv2.WINDOW_AUTOSIZE)
-			cv2.namedWindow("Test 2", cv2.WINDOW_AUTOSIZE)
-
-			cv2.moveWindow("Source Video", 0, 10)
 			cv2.moveWindow("Bounding Boxes", 500, 0)
-			cv2.moveWindow("Test 1", 600, 0)
-			cv2.moveWindow("Test 2", 660, 0)
+
+			#cv2.namedWindow("Test 1", cv2.WINDOW_AUTOSIZE)
+			#cv2.namedWindow("Test 2", cv2.WINDOW_AUTOSIZE)
+			#cv2.moveWindow("Test 1", 600, 0)
+			#cv2.moveWindow("Test 2", 660, 0)
 
 			cv2.setMouseCallback("Bounding Boxes", self.mouse_hover_coordinates)
 
@@ -783,8 +679,6 @@ class SCOCRWorker(QtCore.QThread):
 				success, img = self.cam.read()
 
 				if success:
-					cv2.imshow("Source Video", img)
-
 					##### CROP IMAGE ######
 					img_cropped = cv2.copyMakeBorder(img, 0, 0, 0, 0, cv2.BORDER_REPLICATE)
 					if(self.cropLeft >= 0):
@@ -796,70 +690,43 @@ class SCOCRWorker(QtCore.QThread):
 					elif(self.cropTop < 0):
 						img_cropped = cv2.copyMakeBorder(img_cropped,abs(self.cropTop),0,0,0,cv2.BORDER_CONSTANT, value=[255,255,255])
 
-					#img = shiftImage(img, int(self.cropLeft), int(self.cropTop))
-
-					##### OPENCV PROCESSING TEST ######
+					##### OPENCV PROCESSING ######
 					img_HSV = cv2.cvtColor(img_cropped, cv2.COLOR_BGR2HSV)
 
 					rows,cols,_ = img_HSV.shape
+
+					# rotate image
 					M = cv2.getRotationMatrix2D((cols/2,rows/2), self.rotation, 1)
-					img_HSV = cv2.warpAffine(img_HSV, M, (cols,rows))
+					img_HSV = cv2.warpAffine(img_HSV, M, (cols,rows))	
 
-					threshA = cv2.inRange(img_HSV, (20, 40, 40), (40, 255, 255))
-					threshB = cv2.inRange(img_HSV, (170, 60, 60), (180, 255, 255))
-					threshC = cv2.inRange(img_HSV, (0, 60, 60), (10, 255, 255))
-					th3 = threshA + threshB + threshC
-					ret3, th3 = cv2.threshold(th3, 127, 255, cv2.THRESH_BINARY_INV)
-					img_processed = cv2.erode(th3, numpy.ones((2,2),numpy.uint8), iterations = self.erosion)
+					# shear image
+					M_sh = numpy.float32([[1, math.tan(self.skewx*math.pi/180), 0],
+             						[0, 1, 0],
+            						[0, 0, 1]])
+					img_HSV = cv2.warpPerspective(img_HSV, M_sh,(cols,rows))
 
-					##### CROP IMAGES TO BOUNDING BOX, INVERT, RUN CROPPING ALGORITHM #####
-					clock_1 = img_processed[int('0' + self.coords["clock_1"][2]):int('0' + self.coords["clock_1"][4]), int('0' + self.coords["clock_1"][1]):int('0' + self.coords["clock_1"][3])]
-					clock_2 = img_processed[int('0' + self.coords["clock_2"][2]):int('0' + self.coords["clock_2"][4]), int('0' + self.coords["clock_2"][1]):int('0' + self.coords["clock_2"][3])]
-					clock_3 = img_processed[int('0' + self.coords["clock_3"][2]):int('0' + self.coords["clock_3"][4]), int('0' + self.coords["clock_3"][1]):int('0' + self.coords["clock_3"][3])]
-					clock_4 = img_processed[int('0' + self.coords["clock_4"][2]):int('0' + self.coords["clock_4"][4]), int('0' + self.coords["clock_4"][1]):int('0' + self.coords["clock_4"][3])]
-					shot_clock_1 = img_processed[int('0' + self.coords["shot_clock_1"][2]):int('0' + self.coords["shot_clock_1"][4]), int('0' + self.coords["shot_clock_1"][1]):int('0' + self.coords["shot_clock_1"][3])]
-					shot_clock_2 = img_processed[int('0' + self.coords["shot_clock_2"][2]):int('0' + self.coords["shot_clock_2"][4]), int('0' + self.coords["shot_clock_2"][1]):int('0' + self.coords["shot_clock_2"][3])]
+					# treshold and erode
+					h, s, img_v = cv2.split(img_HSV)
+					ret3, img_th = cv2.threshold(img_v, self.threshold, 255, cv2.THRESH_BINARY)
+					img_processed = cv2.erode(img_th, numpy.ones((2,2),numpy.uint8), iterations = self.erosion)
 
-					clock_1_cropped = autocrop(cv2.threshold(clock_1, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					clock_2_cropped = autocrop(cv2.threshold(clock_2, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					clock_3_cropped = autocrop(cv2.threshold(clock_3, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					clock_4_cropped = autocrop(cv2.threshold(clock_4, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					shot_clock_1_cropped = autocrop(cv2.threshold(shot_clock_1, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					shot_clock_2_cropped = autocrop(cv2.threshold(shot_clock_2, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
-					
-					##### RESIZE WITH NEAREST NEIGHBOR, then INVERT #####
-					ret, clock_1_resized = cv2.threshold(cv2.resize(clock_1_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
-					ret, clock_2_resized = cv2.threshold(cv2.resize(clock_2_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
-					ret, clock_3_resized = cv2.threshold(cv2.resize(clock_3_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
-					ret, clock_4_resized = cv2.threshold(cv2.resize(clock_4_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
-					ret, shot_clock_1_resized = cv2.threshold(cv2.resize(shot_clock_1_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
-					ret, shot_clock_2_resized = cv2.threshold(cv2.resize(shot_clock_2_cropped, (5, 7), 1, 1, cv2.INTER_NEAREST), 127, 255, cv2.THRESH_BINARY_INV)
+					##### PROCESS SINGLE DIGITS #####
+					test_clock_resized_1 = self.processSingleDigit(img_processed, self.coords["clock_1"])
+					test_clock_resized_2 = self.processSingleDigit(img_processed, self.coords["clock_2"])
+					test_clock_resized_3 = self.processSingleDigit(img_processed, self.coords["clock_3"])
+					test_clock_resized_4 = self.processSingleDigit(img_processed, self.coords["clock_4"])
+					test_shot_clock_resized_1 = self.processSingleDigit(img_processed, self.coords["shot_clock_1"])
+					test_shot_clock_resized_2 = self.processSingleDigit(img_processed, self.coords["shot_clock_2"])
 
-
-					##### SHOW PROCESSED IMAGES #####
-					cv2.imshow("Test 1", cv2.resize(clock_3_cropped, (50, 70), 1, 1, cv2.INTER_NEAREST))
-					cv2.imshow("Test 2", cv2.resize(clock_3_resized, (50, 70), 1, 1, cv2.INTER_NEAREST))
-
-					#cv2.imwrite('digits/'+str(int(round(time.time() * 1000)))+'.png', clock_2_resized)
+					##### SHOW PROCESSED IMAGES #####				
+					self.retOCRDigits["clock_1"] = parseSingleDigit(test_clock_resized_1, self.retOCRDigits["clock_1"])
+					self.retOCRDigits["clock_2"] = parseSingleDigit(test_clock_resized_2, self.retOCRDigits["clock_2"])
+					self.retOCRDigits["clock_3"] = parseSingleDigit(test_clock_resized_3, self.retOCRDigits["clock_3"])
+					self.retOCRDigits["clock_4"] = parseSingleDigit(test_clock_resized_4, self.retOCRDigits["clock_4"])
+					self.retOCRDigits["shot_clock_1"] = parseSingleDigit(test_shot_clock_resized_1, self.retOCRDigits["shot_clock_1"])
+					self.retOCRDigits["shot_clock_2"] = parseSingleDigit(test_shot_clock_resized_2, self.retOCRDigits["shot_clock_2"])
 
 					##### COMPARE MATRICES TO REFERENCE DIGITS #####
-					for index, ref_digits in enumerate(self.referenceDigits):
-						for digit in ref_digits:
-							if(index == 10): _index = ""
-							else: _index = index
-							if((clock_1_resized == digit).all()): 
-								self.retOCRDigits["clock_1"] = _index
-							if((clock_2_resized == digit).all()): 
-								self.retOCRDigits["clock_2"] = _index
-							if((clock_3_resized == digit).all()): 
-								self.retOCRDigits["clock_3"] = _index
-							if((clock_4_resized == digit).all()): 
-								self.retOCRDigits["clock_4"] = _index
-							if((shot_clock_1_resized == digit).all()): 
-								self.retOCRDigits["shot_clock_1"] = _index
-							if((shot_clock_2_resized == digit).all()): 
-								self.retOCRDigits["shot_clock_2"] = _index
-
 					shot_clock_decimal = img_processed[int('0' + self.coords["shot_clock_decimal"][2]):int('0' + self.coords["shot_clock_decimal"][4]), int('0' + self.coords["shot_clock_decimal"][1]):int('0' + self.coords["shot_clock_decimal"][3])]
 					clock_colon = img_processed[int('0' + self.coords["clock_colon"][2]):int('0' + self.coords["clock_colon"][4]), int('0' + self.coords["clock_colon"][1]):int('0' + self.coords["clock_colon"][3])]
 					self.retOCRDigits["clock_colon"] = str(clock_colon.mean())[:3]
@@ -880,16 +747,11 @@ class SCOCRWorker(QtCore.QThread):
 					img_disp = cv2.copyMakeBorder(img_processed, 0, 0, 0, 0, cv2.BORDER_REPLICATE)
 					img_disp = cv2.cvtColor(img_disp, cv2.COLOR_GRAY2RGB)
 
-					cv2.putText(img_disp, str(self.mouse_coordinates[0]) + ", " + str(self.mouse_coordinates[1]), (5, 15), cv2.FONT_ITALIC, 0.4, (0,0,0))
+					cv2.putText(img_disp, str(self.mouse_coordinates[0]) + ", " + str(self.mouse_coordinates[1]), (5, 15), cv2.FONT_ITALIC, 0.4, (255,255,0))
 
-					cv2.rectangle(img_disp, (int('0' + self.coords["clock_1"][1]), int('0' + self.coords["clock_1"][2])), (int('0' + self.coords["clock_1"][3]), int('0' + self.coords["clock_1"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["clock_2"][1]), int('0' + self.coords["clock_2"][2])), (int('0' + self.coords["clock_2"][3]), int('0' + self.coords["clock_2"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["clock_3"][1]), int('0' + self.coords["clock_3"][2])), (int('0' + self.coords["clock_3"][3]), int('0' + self.coords["clock_3"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["clock_4"][1]), int('0' + self.coords["clock_4"][2])), (int('0' + self.coords["clock_4"][3]), int('0' + self.coords["clock_4"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["clock_colon"][1]), int('0' + self.coords["clock_colon"][2])), (int('0' + self.coords["clock_colon"][3]), int('0' + self.coords["clock_colon"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["shot_clock_1"][1]), int('0' + self.coords["shot_clock_1"][2])), (int('0' + self.coords["shot_clock_1"][3]), int('0' + self.coords["shot_clock_1"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["shot_clock_2"][1]), int('0' + self.coords["shot_clock_2"][2])), (int('0' + self.coords["shot_clock_2"][3]), int('0' + self.coords["shot_clock_2"][4])), (0,0,255), 1)
-					cv2.rectangle(img_disp, (int('0' + self.coords["shot_clock_decimal"][1]), int('0' + self.coords["shot_clock_decimal"][2])), (int('0' + self.coords["shot_clock_decimal"][3]), int('0' + self.coords["shot_clock_decimal"][4])), (0,0,255), 1)
+					# show bounding boxes and preliminary numbers
+					for coord in self.coords:
+						cv2.rectangle(img_disp, (int('0' + self.coords[coord][1]), int('0' + self.coords[coord][2])), (int('0' + self.coords[coord][3]), int('0' + self.coords[coord][4])), (0,0,255), 1)
 
 					cv2.imshow("Bounding Boxes", img_disp)
 
