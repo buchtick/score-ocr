@@ -138,6 +138,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.resize(1000,400)
 		self.show()
 
+class OcrCoordinateGui():
+	def __init__(self):
+		self.name = "test"
 
 class Window(QtWidgets.QWidget):
 	def __init__(self, parent):
@@ -148,6 +151,8 @@ class Window(QtWidgets.QWidget):
 
 		self.updateScoreboard = QtWidgets.QPushButton("Update")
 		self.updateScoreboard.clicked.connect(self.sendCommandToBrowser)
+
+		self.ocr_worker_params = []
 
 		self.GCOCRCoordinates = {
 			"clock_1": [QtWidgets.QLabel("Clock *0:00"), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLineEdit(""), QtWidgets.QLabel("0"), QtWidgets.QLabel("0"), QtWidgets.QLabel("*"), QtWidgets.QLabel("-")],
@@ -171,13 +176,15 @@ class Window(QtWidgets.QWidget):
 		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
 		self.startSCOCRButton = QtWidgets.QPushButton("Start OCR")
 		self.startSCOCRButton.clicked.connect(self.init_SCOCRWorker)
+		self.pauseSCOCRButton = QtWidgets.QPushButton("Pause OCR")
+		self.pauseSCOCRButton.clicked.connect(self.pause_ocr_worker)
 		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
 		self.terminateSCOCRButton.clicked.connect(self.terminate_SCOCRWorker)
 
 		self.slider_skewx = QtWidgets.QSlider()
 		self.slider_skewx.setOrientation(Qt.Horizontal)
-		self.slider_skewx.setMinimum(-90)
-		self.slider_skewx.setMaximum(90)
+		self.slider_skewx.setMinimum(-45)
+		self.slider_skewx.setMaximum(45)
 		self.slider_skewx.setValue(int(self.qsettings.value("SCskewx", "5")))
 
 		self.previewImageRaw = QtWidgets.QLabel("")
@@ -187,20 +194,19 @@ class Window(QtWidgets.QWidget):
 		self.gameClock = QtWidgets.QLabel("00:00")
 		self.shotClock = QtWidgets.QLabel("00")
 
-		self.initializeOCRCoordinatesList()
+		self.init_ocr_coordinates_list()
 
-		grid.addWidget(self.createGC_OCR_Group(), 0, 2, 4, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.createParametersGroup(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.createCameraPreviewGroup(), 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.createDebugGroup(), 5, 1, 2, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.updateScoreboard, 6, 0, 1, 1) # MUST BE HERE, initializes all QObject lists
+		grid.addWidget(self.ui_create_ocr_group(), 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
+		grid.addWidget(self.ui_create_camera_preview_group(), 0, 0, 4, 1) # MUST BE HERE, initializes all QObject lists
+		grid.addWidget(self.ui_create_parameters_group(), 4, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
+		grid.addWidget(self.ui_create_debug_group(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
+		grid.addWidget(self.updateScoreboard, 5, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		
 		self.init_WebSocketsWorker() # Start ws:// server at port 9000
 		#self.init_OCRWorker() # Start OpenCV, open webcam
 
 		grid.setColumnStretch(0,100)
 		grid.setColumnStretch(1,100)
-		grid.setColumnStretch(2,100)
 
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(10)
@@ -208,13 +214,6 @@ class Window(QtWidgets.QWidget):
 
 	def closeEvent(self, event):
 		self.terminate_SCOCRWorker()
-	
-	def initializeOCRCoordinatesList(self):
-		_loadedGCOCRCoordinates = self.qsettings.value("OCRcoordinates")
-
-		for key, param in self.GCOCRCoordinates.items():
-			for index, qobj in enumerate(param):
-				qobj.setText(_loadedGCOCRCoordinates[key][index])
 
 	def sendCommandToBrowser(self):
 		msg = {
@@ -252,24 +251,44 @@ class Window(QtWidgets.QWidget):
 		self.webSocketsWorker.start()# Call to start WebSockets server
 
 	def init_SCOCRWorker(self):
-		self.SCOCRWorker = SCOCRWorker(self.returnOCRCoordinatesList(), self.SCssocrArguments.text(), self.SCwaitKey.text(), self.SCvideoCaptureIndex.text(), self.SCrotation.text(), self.SCskewx.text(), self.SCerosion.text(), self.SCthreshold.text(), self.SCcropLeft.text(), self.SCcropTop.text())
-		self.SCOCRWorker.error.connect(self.close)
-		self.SCOCRWorker.recognizedDigits.connect(self.SCOCRhandler)
-		self.SCOCRWorker.processedFrameFlag.connect(lambda: self.CPUpercentage.setText('CPU: ' + str(psutil.cpu_percent()) + "%"))
-		self.SCOCRWorker.QImageFrame.connect(self.SCOCRPreviewImageHandler)
-		self.SCOCRWorker.run() # Call to start OCR openCV thread
+		self.ocr_worker_params = ScOcrWorkerParams(
+				ssocrArguments=self.SCssocrArguments.text(),
+				waitKey=self.SCwaitKey.text(),
+				videoCaptureIndex=self.SCvideoCaptureIndex.text(),
+				rotation=self.SCrotation.text(),
+				skewx=self.SCskewx.text(),
+				erosion=self.SCerosion.text(),
+				threshold=self.SCthreshold.text(),
+				cropLeft=self.SCcropLeft.text(),
+				cropTop=self.SCcropTop.text()
+				)
+
+		self.ocr_worker = ScOcrWorker(self.get_ocr_coordinates_list(), self.ocr_worker_params)
+		self.ocr_worker.error.connect(self.close)
+		self.ocr_worker.recognizedDigits.connect(self.ocr_result_handler)
+		self.ocr_worker.alldigits.connect(self.ocr_result_handler_new)
+		self.ocr_worker.processedFrameFlag.connect(lambda: self.CPUpercentage.setText('CPU: ' + str(psutil.cpu_percent()) + "%"))
+		self.ocr_worker.QImageFrame.connect(self.ocr_preview_image_handler)
+		self.ocr_worker.run() # Call to start OCR openCV thread
+
+	def pause_ocr_worker(self):
+		self.ocr_worker.pause()
 
 	def terminate_SCOCRWorker(self):
-		self.SCOCRWorker.kill()
-		del(self.SCOCRWorker)
+		self.ocr_worker.kill()
+		del(self.ocr_worker)
 
-	def SCOCRPreviewImageHandler(self, QImageFrame):
+	def ocr_preview_image_handler(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
 		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
-	def SCOCRhandler(self, digitDict): # Receives [self.digitL, self.digitR] from SCOCRWorker
+	def ocr_result_handler_new(self, digits):
+		print(digits[3].value)
+
+	def ocr_result_handler(self, digitDict):
+		# Receives [self.digitL, self.digitR] from SCOCRWorker
 		self.GCOCRCoordinates["clock_1"][8].setText(str(digitDict["clock_1"]))
 		self.GCOCRCoordinates["clock_2"][8].setText(str(digitDict["clock_2"]))
 		self.GCOCRCoordinates["clock_3"][8].setText(str(digitDict["clock_3"]))
@@ -292,7 +311,7 @@ class Window(QtWidgets.QWidget):
 		self.shotClock.setText(msg_game["shot_clock"])
 		self.webSocketsWorker.send(json.dumps(packet))
 
-	def returnOCRCoordinatesList(self): # Returns 1:1 copy of self.GCOCRCoordinates without QObjects
+	def get_ocr_coordinates_list(self): # Returns 1:1 copy of self.GCOCRCoordinates without QObjects
 		response = {
 			"clock_1": ["", "", "", "", "", "", "", "", ""],
 			"clock_2": ["", "", "", "", "", "", "", "", ""],
@@ -309,7 +328,15 @@ class Window(QtWidgets.QWidget):
 
 		return response
 
-	def widthHeightAutoFiller(self): # Calculates width and height, then saves to settings.ini file
+	def init_ocr_coordinates_list(self):
+		_loadedGCOCRCoordinates = self.qsettings.value("OCRcoordinates")
+
+		for key, param in self.GCOCRCoordinates.items():
+			for index, qobj in enumerate(param):
+				qobj.setText(_loadedGCOCRCoordinates[key][index])
+
+	def update_state(self):
+		# calculate width and height for each coordinate
 		for key, value in self.GCOCRCoordinates.items():
 			tl_X = int('0' + value[1].text()) # '0' to avoid int('') empty string error
 			tl_Y = int('0' + value[2].text())
@@ -318,7 +345,9 @@ class Window(QtWidgets.QWidget):
 			value[5].setText(str(br_X - tl_X))
 			value[6].setText(str(br_Y - tl_Y))
 
-		self.qsettings.setValue("OCRcoordinates", self.returnOCRCoordinatesList())
+ 		# saves coords list without graphics objects
+		self.qsettings.setValue("OCRcoordinates", self.get_ocr_coordinates_list())
+		# save other parameters
 		self.qsettings.setValue("SCssocrArguments", self.SCssocrArguments.text())
 		self.qsettings.setValue("SCrotation", self.SCrotation.text())
 		self.qsettings.setValue("SCskewx", self.SCskewx.text())
@@ -328,21 +357,26 @@ class Window(QtWidgets.QWidget):
 		self.qsettings.setValue("LCrop", self.SCcropLeft.text())
 		self.qsettings.setValue("SCwaitKey", self.SCwaitKey.text())
 		self.qsettings.setValue("SCvideoCaptureIndex", self.SCvideoCaptureIndex.text())
+		self.qsettings.setValue("SCskewx", self.slider_skewx.value())
 		
 		try:
-			self.SCOCRWorker.importOCRCoordinates(self.returnOCRCoordinatesList())
-			self.SCOCRWorker.ssocrArguments = self.SCssocrArguments.text()
-			self.SCOCRWorker.rotation = int(self.SCrotation.text())
-			self.SCOCRWorker.skewx = int(self.SCskewx.text())
-			self.SCOCRWorker.threshold = int(self.SCthreshold.text())
-			self.SCOCRWorker.erosion = int(self.SCerosion.text())
-			self.SCOCRWorker.cropLeft = int(self.SCcropLeft.text())
-			self.SCOCRWorker.cropTop = int(self.SCcropTop.text())
-			self.SCOCRWorker.waitKey = self.SCwaitKey.text()
+			self.ocr_worker_params = ScOcrWorkerParams(
+				ssocrArguments=self.SCssocrArguments.text(),
+				waitKey=self.SCwaitKey.text(),
+				videoCaptureIndex=self.SCvideoCaptureIndex.text(),
+				rotation=self.SCrotation.text(),
+				skewx=self.SCskewx.text(),
+				erosion=self.SCerosion.text(),
+				threshold=self.SCthreshold.text(),
+				cropLeft=self.SCcropLeft.text(),
+				cropTop=self.SCcropTop.text()
+				)
+			self.ocr_worker.update_params(self.ocr_worker_params)
+			self.ocr_worker.update_ocr_coordinates(self.get_ocr_coordinates_list())
 		except:
 			pass
 
-	def createGC_OCR_Group(self):
+	def ui_create_ocr_group(self):
 		groupBox = QtWidgets.QGroupBox("Bounding Boxes")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
@@ -381,10 +415,10 @@ class Window(QtWidgets.QWidget):
 			param[2].setMaxLength(3)
 			param[3].setMaxLength(3)
 			param[4].setMaxLength(3)
-			param[1].editingFinished.connect(self.widthHeightAutoFiller) # On change in X or Y, update width + height
-			param[2].editingFinished.connect(self.widthHeightAutoFiller)
-			param[3].editingFinished.connect(self.widthHeightAutoFiller)
-			param[4].editingFinished.connect(self.widthHeightAutoFiller)
+			param[1].editingFinished.connect(self.update_state) # On change in X or Y, update width + height
+			param[2].editingFinished.connect(self.update_state)
+			param[3].editingFinished.connect(self.update_state)
+			param[4].editingFinished.connect(self.update_state)
 			param[5].setAlignment(Qt.AlignCenter)
 			param[6].setAlignment(Qt.AlignCenter)
 			param[7].setAlignment(Qt.AlignCenter)
@@ -421,7 +455,7 @@ class Window(QtWidgets.QWidget):
 		groupBox.setLayout(grid)
 		return groupBox
 
-	def createParametersGroup(self):
+	def ui_create_parameters_group(self):
 		groupBox = QtWidgets.QGroupBox("Camera Parameters")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
@@ -446,20 +480,20 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(self.SCwaitKey, 3, 0)
 		grid.addWidget(self.SCvideoCaptureIndex, 3, 1)
 		grid.addWidget(self.startSCOCRButton, 3, 2)
-		grid.addWidget(self.terminateSCOCRButton, 3, 3)
-		grid.addWidget(self.slider_skewx, 4, 0, columnSpan=-1)
+		grid.addWidget(self.pauseSCOCRButton, 3, 3)
+		grid.addWidget(self.terminateSCOCRButton, 3, 4)
+		grid.addWidget(self.slider_skewx, 4, 0, 1, 3)
 
-		self.SCssocrArguments.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCrotation.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCskewx.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCerosion.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCthreshold.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCwaitKey.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCvideoCaptureIndex.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCcropLeft.editingFinished.connect(self.widthHeightAutoFiller)
-		self.SCcropTop.editingFinished.connect(self.widthHeightAutoFiller)
-
-		self.slider_skewx.valueChanged.connect(self.widthHeightAutoFiller)
+		self.SCssocrArguments.editingFinished.connect(self.update_state)
+		self.SCrotation.editingFinished.connect(self.update_state)
+		self.SCskewx.editingFinished.connect(self.update_state)
+		self.SCerosion.editingFinished.connect(self.update_state)
+		self.SCthreshold.editingFinished.connect(self.update_state)
+		self.SCwaitKey.editingFinished.connect(self.update_state)
+		self.SCvideoCaptureIndex.editingFinished.connect(self.update_state)
+		self.SCcropLeft.editingFinished.connect(self.update_state)
+		self.SCcropTop.editingFinished.connect(self.update_state)
+		self.slider_skewx.valueChanged.connect(self.update_state)
 
 		grid.setColumnStretch(0,50)
 		grid.setColumnStretch(1,25)
@@ -467,7 +501,7 @@ class Window(QtWidgets.QWidget):
 		groupBox.setLayout(grid)
 		return groupBox
 
-	def createDebugGroup(self):
+	def ui_create_debug_group(self):
 		groupBox = QtWidgets.QGroupBox("Debug")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
@@ -489,7 +523,7 @@ class Window(QtWidgets.QWidget):
 		groupBox.setLayout(grid)
 		return groupBox
 
-	def createCameraPreviewGroup(self):
+	def ui_create_camera_preview_group(self):
 		groupBox = QtWidgets.QGroupBox("Preview")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
@@ -587,26 +621,27 @@ class WebSocketsWorker(QtCore.QThread):
 		reactor.callFromThread(self.factory.broadcast, data)
 		self.updateProgress.emit([self.factory.returnClients()])
 
+#class DigitGroup():
+
 class SingleDigit():
 	def __init__(self, name):
 		self.name = name
-		self.coords = []
+		self.coords = ["","","","","","","","",""]
 		self.value = ""
 		self.enabled = False
 
+	def process_image(self, image):
+		croppedImage = image[int('0' + self.coords[2]):int('0' + self.coords[4]), int('0' + self.coords[1]):int('0' + self.coords[3])]
+		croppedImage = autocrop(cv2.threshold(croppedImage, 127, 255, cv2.THRESH_BINARY_INV)[1], 10)
 
-class SCOCRWorker(QtCore.QThread):
-	error = QtCore.Signal(int)
-	recognizedDigits = QtCore.Signal(dict)
-	QImageFrame = QtCore.Signal(list)
-	processedFrameFlag = QtCore.Signal(int)
+		processedDigitImage = cv2.resize(croppedImage, (50, 70), 1, 1, cv2.INTER_NEAREST)
 
-	def __init__(self, OCRCoordinatesList, ssocrArguments, waitKey, videoCaptureIndex, rotation, skewx, erosion, threshold, cropLeft, cropTop):
-		QtCore.QThread.__init__(self)
+		self.value = parseSingleDigit(processedDigitImage,self.value)
 
+class ScOcrWorkerParams():
+	def __init__(self, ssocrArguments, waitKey, videoCaptureIndex, rotation, skewx, erosion, threshold, cropLeft, cropTop):
 		self.ssocrArguments = ssocrArguments
 		self.waitKey = waitKey
-		self.coords = OCRCoordinatesList
 		self.videoCaptureIndex = videoCaptureIndex
 		self.rotation = int(rotation)
 		self.skewx = int(skewx)
@@ -614,6 +649,34 @@ class SCOCRWorker(QtCore.QThread):
 		self.threshold = int(threshold)
 		self.cropLeft = int(cropLeft)
 		self.cropTop = int(cropTop)
+		self.mouse_coordinates = [0, 0]
+
+
+class ScOcrWorker(QtCore.QThread):
+	error = QtCore.Signal(int)
+	recognizedDigits = QtCore.Signal(dict)
+	alldigits = QtCore.Signal(dict)
+	QImageFrame = QtCore.Signal(list)
+	processedFrameFlag = QtCore.Signal(int)
+
+	def __init__(self, OCRCoordinatesList, params):
+		QtCore.QThread.__init__(self)
+
+		self._isRunning = False
+		self._isPaused = False
+
+		self.digits = {}
+
+		self.ssocrArguments = params.ssocrArguments
+		self.waitKey = params.waitKey
+		self.coords = OCRCoordinatesList #coordinates list without graphics
+		self.videoCaptureIndex = params.videoCaptureIndex
+		self.rotation = int(params.rotation)
+		self.skewx = int(params.skewx)
+		self.erosion = int(params.erosion)
+		self.threshold = int(params.threshold)
+		self.cropLeft = int(params.cropLeft)
+		self.cropTop = int(params.cropTop)
 		self.mouse_coordinates = [0, 0]
 		self.cam = None # VideoCapture object, created in run()
 		
@@ -628,14 +691,29 @@ class SCOCRWorker(QtCore.QThread):
 			"shot_clock_decimal": ""
 		}
 
-		self.digit1 = SingleDigit("clock_1")
+		self.update_ocr_coordinates(OCRCoordinatesList)
+
+	def update_params(self, new_params):
+		self.ssocrArguments = new_params.ssocrArguments
+		self.waitKey = new_params.waitKey
+		self.videoCaptureIndex = new_params.videoCaptureIndex
+		self.rotation = int(new_params.rotation)
+		self.skewx = int(new_params.skewx)
+		self.erosion = int(new_params.erosion)
+		self.threshold = int(new_params.threshold)
+		self.cropLeft = int(new_params.cropLeft)
+		self.cropTop = int(new_params.cropTop)
 
 	def mouse_hover_coordinates(self, event, x, y, flags, param):
 		if event == cv2.EVENT_MOUSEMOVE:
 			self.mouse_coordinates = [x, y]
 	
-	def importOCRCoordinates(self, OCRCoordinatesList):
+	def update_ocr_coordinates(self, OCRCoordinatesList):
 		self.coords = OCRCoordinatesList
+
+		for i, coord in enumerate(self.coords):
+			self.digits[i] = SingleDigit(coord)
+			self.digits[i].coords = self.coords[coord]
 
 	def processSingleDigit(self, inputImage, coords):
 		croppedImage = inputImage[int('0' + coords[2]):int('0' + coords[4]), int('0' + coords[1]):int('0' + coords[3])]
@@ -644,6 +722,12 @@ class SCOCRWorker(QtCore.QThread):
 		processedDigitImage = cv2.resize(croppedImage, (50, 70), 1, 1, cv2.INTER_NEAREST)
 
 		return processedDigitImage
+
+	def pause(self):
+		if self._isPaused:
+			self._isPaused = False
+		else:
+			self._isPaused = True
 
 	def kill(self):
 		self._isRunning = False
@@ -673,8 +757,13 @@ class SCOCRWorker(QtCore.QThread):
 			self._isRunning = True
 
 			while self._isRunning:
+				# close the OCR session if cam is not available or is closed
 				if self.cam is None or not self.cam.isOpened():
 					break
+				# pause the OCR session
+				if self._isPaused:
+					cv2.waitKey(int(self.waitKey))
+					continue
 
 				success, img = self.cam.read()
 
@@ -709,6 +798,11 @@ class SCOCRWorker(QtCore.QThread):
 					h, s, img_v = cv2.split(img_HSV)
 					ret3, img_th = cv2.threshold(img_v, self.threshold, 255, cv2.THRESH_BINARY)
 					img_processed = cv2.erode(img_th, numpy.ones((2,2),numpy.uint8), iterations = self.erosion)
+
+					for digit in self.digits:
+						self.digits[digit].process_image(img_processed)
+
+					print(self.digits[3].value)
 
 					##### PROCESS SINGLE DIGITS #####
 					test_clock_resized_1 = self.processSingleDigit(img_processed, self.coords["clock_1"])
@@ -766,6 +860,7 @@ class SCOCRWorker(QtCore.QThread):
 					cv2.waitKey(int(self.waitKey))
 					self.processedFrameFlag.emit(1)
 					self.recognizedDigits.emit(self.retOCRDigits)
+					self.alldigits.emit(self.digits)
 
 
 
