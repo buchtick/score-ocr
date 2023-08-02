@@ -1,0 +1,7 @@
+autobahn_rce==0.6.0.5
+numpy==1.25.1
+opencv_python==4.8.0.74
+psutil==5.9.4
+PySide2==5.15.2.1
+PySide2==5.15.2.1
+Twisted==22.10.0
