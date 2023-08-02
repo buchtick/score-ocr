@@ -166,7 +166,7 @@ class ScOcrWorker(QtCore.QThread):
 
 	def kill(self):
 		self._isRunning = False
-		self.terminate()
+		self.quit()
 
 	def run(self):
 		try:
@@ -192,8 +192,9 @@ class ScOcrWorker(QtCore.QThread):
 
 			while self._isRunning:
 				# close the OCR session if cam is not available or is closed
-				if self.cam is None or not self.cam.isOpened():
+				if self.cam is None or not self.cam.isOpened() or not self._isRunning:
 					break
+
 				# pause the OCR session
 				if self._isPaused:
 					cv2.waitKey(int(self.waitKey))
@@ -236,23 +237,6 @@ class ScOcrWorker(QtCore.QThread):
 					for digit in self.digits:
 						self.digits[digit].process_image(img_processed)
 
-					##### COMPARE MATRICES TO REFERENCE DIGITS #####
-					#shot_clock_decimal = img_processed[int('0' + self.coords["shot_clock_decimal"][2]):int('0' + self.coords["shot_clock_decimal"][4]), int('0' + self.coords["shot_clock_decimal"][1]):int('0' + self.coords["shot_clock_decimal"][3])]
-					#clock_colon = img_processed[int('0' + self.coords["clock_colon"][2]):int('0' + self.coords["clock_colon"][4]), int('0' + self.coords["clock_colon"][1]):int('0' + self.coords["clock_colon"][3])]
-					#self.retOCRDigits["clock_colon"] = str(clock_colon.mean())[:3]
-					#self.retOCRDigits["shot_clock_decimal"] = str(shot_clock_decimal.mean())[:3]
-
-					##### CLOCKS FORMATTING ######
-					#if(clock_colon.mean() < 100): # If has colon
-					#	self.retOCRDigits["clock"] = str(self.retOCRDigits["clock_1"]) + str(self.retOCRDigits["clock_2"]) + ":" + str(self.retOCRDigits["clock_3"]) + str(self.retOCRDigits["clock_4"]) 
-					#else:
-					#	self.retOCRDigits["clock"] = str(self.retOCRDigits["clock_1"]) + str(self.retOCRDigits["clock_2"]) + "." + str(self.retOCRDigits["clock_3"])
-					#
-					#if(shot_clock_decimal.mean() > 100): # If >10s
-					#	self.retOCRDigits["shot_clock"] = str(self.retOCRDigits["shot_clock_1"]) + str(self.retOCRDigits["shot_clock_2"])
-					#else:
-					#	self.retOCRDigits["shot_clock"] = str(self.retOCRDigits["shot_clock_1"]) + '.' + str(self.retOCRDigits["shot_clock_2"])
-
 					##### SHOW PRELIMINARY PROCESSED IMAGE WITH BOUNDING BOXES, X, Y #####
 					img_disp = cv2.copyMakeBorder(img_processed, 0, 0, 0, 0, cv2.BORDER_REPLICATE)
 					img_disp = cv2.cvtColor(img_disp, cv2.COLOR_GRAY2RGB)
@@ -276,8 +260,6 @@ class ScOcrWorker(QtCore.QThread):
 					cv2.waitKey(int(self.waitKey))
 					self.processedFrameFlag.emit(1)
 					self.alldigits.emit(self.digits)
-
-
 
 		except Exception as e:
 			print(e)

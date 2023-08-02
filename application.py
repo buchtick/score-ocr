@@ -4,22 +4,19 @@ from PySide2 import QtCore, QtWidgets
 from PySide2.QtCore import *
 from PySide2.QtGui import *
 
-import sys
+from datetime import datetime
 
-from autobahn.twisted.websocket import WebSocketServerProtocol, WebSocketServerFactory, listenWS
-from twisted.internet import reactor
-from twisted.python import log
-from twisted.web.server import Site
-from twisted.web.static import File
+import sys
 
 import json
 import os
 import urllib.request, urllib.error, urllib.parse
 import webbrowser
 
-from ocrworker import ScOcrWorker, ScOcrWorkerParams
-
 import psutil # CPU usage
+
+from ocrworker import ScOcrWorker, ScOcrWorkerParams
+from wsworker import WebSocketsWorker
 
 if getattr(sys, 'frozen', False):
 	_applicationPath = os.path.dirname(sys.executable)
@@ -63,11 +60,14 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.resize(1000,400)
 		self.show()
 
+	def closeEvent(self, event):
+		self.main_widget.close()
+
 class OcrCoordinateGui():
 	def __init__(self, name, coords = None):
 		self.id = id(self)
 		self.name = name
-		self.lbl_name = QtWidgets.QLabel(self.name)
+		self.value = ""
 		self.name_field = QtWidgets.QLineEdit(self.name)
 		self.tl_coord_field_x = QtWidgets.QLineEdit("")
 		self.tl_coord_field_y = QtWidgets.QLineEdit("")
@@ -84,7 +84,6 @@ class OcrCoordinateGui():
 
 		self.name_field.textChanged.connect(self.on_name_update)
 
-		self.lbl_name.setAlignment(Qt.AlignCenter)
 		self.lbl_width.setAlignment(Qt.AlignCenter)
 		self.lbl_height.setAlignment(Qt.AlignCenter)
 		self.lbl_value.setAlignment(Qt.AlignCenter)
@@ -102,7 +101,6 @@ class OcrCoordinateGui():
 			self.set_coords(coords)
 
 	def __del__(self):
-		self.lbl_name.deleteLater()
 		self.name_field.deleteLater()
 		self.tl_coord_field_x.deleteLater()
 		self.tl_coord_field_y.deleteLater()
@@ -129,7 +127,6 @@ class OcrCoordinateGui():
 	def on_name_update(self, value):
 		self.name = self.name_field.text()
 
-
 class Window(QtWidgets.QWidget):
 	def __init__(self, parent):
 		super(Window, self).__init__(parent)
@@ -140,6 +137,7 @@ class Window(QtWidgets.QWidget):
 		self.updateScoreboard = QtWidgets.QPushButton("Update")
 		self.updateScoreboard.clicked.connect(self.sendCommandToBrowser)
 		
+		self.ocr_worker = None
 		#parameters for OCR Worker - gets populated on clicking Start OCR
 		self.ocr_worker_params = []
 		self.g_ocr_coords = []
@@ -154,6 +152,7 @@ class Window(QtWidgets.QWidget):
 		self.SCcropLeft = QtWidgets.QLineEdit(self.qsettings.value("LCrop", "0"))
 		self.SCcropTop = QtWidgets.QLineEdit(self.qsettings.value("TCrop", "0"))
 		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
+		self.SCwebsocketAddress = QtWidgets.QLineEdit(self.qsettings.value("SCwebsocketAddress", 'ws://localhost:9000'))
 		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
 		self.startSCOCRButton = QtWidgets.QPushButton("Start OCR")
 		self.startSCOCRButton.clicked.connect(self.init_SCOCRWorker)
@@ -183,7 +182,7 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(self.ui_create_debug_group(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.updateScoreboard, 5, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		
-		self.init_WebSocketsWorker() # Start ws:// server at port 9000
+		self.init_WebSocketsWorker()
 
 		grid.setColumnStretch(0,100)
 		grid.setColumnStretch(1,50)
@@ -198,37 +197,18 @@ class Window(QtWidgets.QWidget):
 		self.terminate_SCOCRWorker()
 
 	def sendCommandToBrowser(self):
-		msg = {
-			'gameID': '',
-			'ticker': '',
-			'game_over': '',
-			'guest': { 
-						'imagePath': '',
-						'color': ''
-			},
-			'home': { 
-						'imagePath': '',
-						'color': ''
-			}
-		}
 
-		msg['guest']['imagePath'] = self.teamAImagePath.text()
-		msg['guest']['color'] = self.teamAColor.text()
-		msg['home']['imagePath'] = self.teamBImagePath.text()
-		msg['home']['color'] = self.teamBColor.text()
-		msg['gameID'] = self.gameID.text().strip()
-		msg["game_over"] = self.gameOverCheckBox.isChecked()
+		current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
+		response = {}
+		response["timestamp"] = current_time
+		for key, param in enumerate(self.g_ocr_coords):
+			response[param.name] = param.value
 
-		if self.tickerRadioGroup.checkedId() == 0:
-			msg["ticker"] = self.tickerTextLineEdit.text()
-
-
-		print(msg)
-		self.webSocketsWorker.send(json.dumps(msg));
+		self.webSocketsWorker.send(json.dumps(response))
 
 	def init_WebSocketsWorker(self):
-		self.webSocketsWorker = WebSocketsWorker()
+		self.webSocketsWorker = WebSocketsWorker(serverAddress=self.SCwebsocketAddress.text())
 		self.webSocketsWorker.error.connect(self.close)
 		self.webSocketsWorker.start()# Call to start WebSockets server
 
@@ -256,8 +236,10 @@ class Window(QtWidgets.QWidget):
 		self.ocr_worker.pause()
 
 	def terminate_SCOCRWorker(self):
-		self.ocr_worker.kill()
-		del(self.ocr_worker)
+		if self.ocr_worker is not None:
+			self.ocr_worker.quit()
+			self.ocr_worker.kill()
+			del(self.ocr_worker)
 
 	def ocr_preview_image_handler(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
@@ -268,20 +250,9 @@ class Window(QtWidgets.QWidget):
 	def ocr_result_handler_new(self, digits):
 		for digit in digits:
 			self.g_ocr_coords[digit].lbl_value.setText(str(digits[digit].value))
-
-	# def ocr_result_handler(self, digitDict):
-	# 	msg_game = {
-	# 		"shot_clock": digitDict["shot_clock"],
-	# 		"clock": digitDict["clock"],
-	# 	}
-
-	# 	packet = {
-	# 		"game": msg_game
-	# 	}
-
-	# 	self.gameClock.setText(msg_game["clock"])
-	# 	self.shotClock.setText(msg_game["shot_clock"])
-	# 	self.webSocketsWorker.send(json.dumps(packet))
+			self.g_ocr_coords[digit].value = digits[digit].value
+		
+		self.sendCommandToBrowser()
 
 	def get_ocr_coodinates_list(self):
 		response = {}
@@ -322,6 +293,7 @@ class Window(QtWidgets.QWidget):
 		self.qsettings.setValue("LCrop", self.SCcropLeft.text())
 		self.qsettings.setValue("SCwaitKey", self.SCwaitKey.text())
 		self.qsettings.setValue("SCvideoCaptureIndex", self.SCvideoCaptureIndex.text())
+		self.qsettings.setValue("SCwebsocketAddress", self.SCwebsocketAddress.text())
 		self.qsettings.setValue("SCskewx", self.slider_skewx.value())
 		
 		try:
@@ -378,6 +350,8 @@ class Window(QtWidgets.QWidget):
 				grid.addWidget(widget, row, col)
 			else:
 				grid.replaceWidget(grid.itemAtPosition(row, col).widget(),widget)
+
+		self.g_ocr_group.setStyleSheet(GroupBoxStyleSheet)
 
 		grid = self.g_ocr_group.layout()
 
@@ -498,6 +472,9 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(QtWidgets.QLabel("Camera source"), 4, 0, 1, 6)
 		grid.addWidget(self.SCvideoCaptureIndex, 5, 0, 1, 6)
 
+		grid.addWidget(QtWidgets.QLabel("Websocket address"), 6, 0, 1, 6)
+		grid.addWidget(self.SCwebsocketAddress, 7, 0, 1, 6)
+
 		self.SCssocrArguments.editingFinished.connect(self.update_state)
 		self.SCrotation.editingFinished.connect(self.update_state)
 		self.SCskewx.editingFinished.connect(self.update_state)
@@ -505,6 +482,7 @@ class Window(QtWidgets.QWidget):
 		self.SCthreshold.editingFinished.connect(self.update_state)
 		self.SCwaitKey.editingFinished.connect(self.update_state)
 		self.SCvideoCaptureIndex.editingFinished.connect(self.update_state)
+		self.SCwebsocketAddress.editingFinished.connect(self.update_state)
 		self.SCcropLeft.editingFinished.connect(self.update_state)
 		self.SCcropTop.editingFinished.connect(self.update_state)
 		self.slider_skewx.valueChanged.connect(self.update_state)
@@ -557,82 +535,6 @@ class Window(QtWidgets.QWidget):
 
 		groupBox.setLayout(grid)
 		return groupBox
-
-class WebSocketsWorker(QtCore.QThread):
-	updateProgress = QtCore.Signal(list)
-	error = QtCore.Signal(str)
-	socket_opened = QtCore.Signal(int)
-
-	class BroadcastServerProtocol(WebSocketServerProtocol):
-		def onOpen(self):
-			self.factory.register(self)
-
-		def onMessage(self, payload, isBinary):
-			if not isBinary:
-				msg = "{} from {}".format(payload.decode('utf8'), self.peer)
-				self.factory.broadcast(msg)
-
-		def connectionLost(self, reason):
-			WebSocketServerProtocol.connectionLost(self, reason)
-			self.factory.unregister(self)
-
-	class BroadcastServerFactory(WebSocketServerFactory):
-		def __init__(self, url, debug=False, debugCodePaths=False):
-			WebSocketServerFactory.__init__(self, url)
-			self.clients = []
-			self.tickcount = 0
-			#self.tick()
-
-		def tick(self):
-			self.tickcount += 1
-			self.broadcast("tick %d from server" % self.tickcount)
-			reactor.callLater(0.5, self.tick)
-
-		def register(self, client):
-			if client not in self.clients:
-				print(("registered client {}".format(client.peer)))
-				self.clients.append(client)
-
-		def unregister(self, client):
-			if client in self.clients:
-				print(("unregistered client {}".format(client.peer)))
-				self.clients.remove(client)
-
-		def broadcast(self, msg):
-			#print("broadcasting message '{}' ..".format(msg))
-			for c in self.clients:
-				c.sendMessage(msg.encode('utf8'))
-				#print("message {} sent to {}".format(msg, c.peer))
-
-		def returnClients(self):
-			return
-			#for c in self.clients:
-				#print(c.peer)
-
-
-	def __init__(self):
-		QtCore.QThread.__init__(self)
-		self.factory = self.BroadcastServerFactory("ws://localhost:9000", debug=False, debugCodePaths=False)
-
-	def run(self):
-		self.factory.protocol = self.BroadcastServerProtocol
-		try:
-			listenWS(self.factory)
-		except:
-			self.error.emit("Fail")
-		webdir = File(_applicationPath)
-		webdir.indexNames = ['index.php', 'index.html']
-		web = Site(webdir)
-		try:
-			reactor.listenTCP(8080, web)
-			self.socket_opened.emit(1)
-		except: 
-			self.error.emit("Fail")
-		reactor.run(installSignalHandlers=0)
-
-	def send(self, data):
-		reactor.callFromThread(self.factory.broadcast, data)
-		self.updateProgress.emit([self.factory.returnClients()])
 
 if __name__ == '__main__':
 	app = QtWidgets.QApplication(sys.argv)
