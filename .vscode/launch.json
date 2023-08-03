@@ -5,12 +5,21 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Python: Aktuelle Datei",
+			"name": "Python: Current File",
 			"type": "python",
 			"request": "launch",
 			"program": "${file}",
 			"console": "integratedTerminal",
 			"justMyCode": true
-		}
+		},
+		{
+            "name": "Python: Current File with profiler",
+            "type": "python",
+            "request": "launch",
+            "module": "cProfile",
+            "args": [
+                "-o", "tmp.prof", "${file}"
+            ]
+        }
 	]
 }

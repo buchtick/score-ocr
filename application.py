@@ -244,8 +244,8 @@ class Window(QtWidgets.QWidget):
 	def ocr_preview_image_handler(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
-		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(500, 500, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(600, 600, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(600, 600, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
 	def ocr_result_handler_new(self, digits):
 		for digit in digits:
