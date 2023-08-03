@@ -3,3 +3,4 @@ dist*
 *.mov
 tmp.prof
 __pycache__/
+settings.ini
