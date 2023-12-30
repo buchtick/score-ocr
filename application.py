@@ -1,8 +1,8 @@
 # coding: utf8
 
-from PySide2 import QtCore, QtWidgets
-from PySide2.QtCore import *
-from PySide2.QtGui import *
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtCore import *
+from PySide6.QtGui import *
 
 from datetime import datetime
 
@@ -36,20 +36,13 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.qsettings.setFallbacksEnabled(False)
 
 		######## ACTIONS ###########
-		exitItem = QtWidgets.QAction('Exit', self)
+		exitItem = QAction('Exit', self)
 		exitItem.setStatusTip('Exit application...')
 		exitItem.triggered.connect(self.close)
-
-		self.openChromaKeyDisplay = QtWidgets.QAction('Open Key Output for Vision Mixer', self)
-		self.openChromaKeyDisplay.setStatusTip('Open chroma-key output display for the vision mixer...')
-		self.openChromaKeyDisplay.triggered.connect(lambda: webbrowser.open_new("http://localhost:8080/"))
 		######## END ACTIONS ###########
-
 
 		menubar = self.menuBar()
 		fileMenu = menubar.addMenu('&File')
-		fileMenu.addAction(self.openChromaKeyDisplay)
-		fileMenu.addSeparator()
 		fileMenu.addAction(exitItem)
 
 
@@ -144,37 +137,34 @@ class Window(QtWidgets.QWidget):
 
 		self.init_ocr_coordinates_list_new()
 
-		self.SCssocrArguments = QtWidgets.QLineEdit(self.qsettings.value("SCssocrArguments", "crop 0 0 450 200 mirror horiz shear 10 mirror horiz gray_stretch 100 254 invert remove_isolated -T "))
 		self.SCrotation = QtWidgets.QLineEdit(self.qsettings.value("SCrotation", "0"))
 		self.SCskewx = QtWidgets.QLineEdit(self.qsettings.value("SCskewx", "5"))
+		self.SCskewy = QtWidgets.QLineEdit(self.qsettings.value("SCskewy", "5"))
 		self.SCerosion = QtWidgets.QLineEdit(self.qsettings.value("SCerosion", "2"))
+		self.SCdilate = QtWidgets.QLineEdit(self.qsettings.value("SCdilate", "0"))
 		self.SCthreshold = QtWidgets.QLineEdit(self.qsettings.value("SCthreshold", "127"))
 		self.SCcropLeft = QtWidgets.QLineEdit(self.qsettings.value("LCrop", "0"))
 		self.SCcropTop = QtWidgets.QLineEdit(self.qsettings.value("TCrop", "0"))
 		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
 		self.SCwebsocketAddress = QtWidgets.QLineEdit(self.qsettings.value("SCwebsocketAddress", 'ws://localhost:9000'))
 		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
+		
 		self.startSCOCRButton = QtWidgets.QPushButton("Start OCR")
-		self.startSCOCRButton.clicked.connect(self.init_SCOCRWorker)
 		self.pauseSCOCRButton = QtWidgets.QPushButton("Pause OCR")
-		self.pauseSCOCRButton.clicked.connect(self.pause_ocr_worker)
 		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
-		self.terminateSCOCRButton.clicked.connect(self.terminate_SCOCRWorker)
-
-		self.slider_skewx = QtWidgets.QSlider()
-		self.slider_skewx.setOrientation(Qt.Horizontal)
-		self.slider_skewx.setMinimum(-45)
-		self.slider_skewx.setMaximum(45)
-		self.slider_skewx.setValue(int(self.qsettings.value("SCskewx", "-6")))
+		
 
 		self.previewImageRaw = QtWidgets.QLabel("")
+		self.previewImageRaw.mousePressEvent = self.raw_preview_click_handler
+		self.previewImageRaw.mouseReleaseEvent = self.raw_preview_click_handler
 		self.previewImageProcessed = QtWidgets.QLabel("")
+		self.previewImageProcessed.wheelEvent = self.processed_preview_zoom_handler
+		self.previewImageProcessed.mousePressEvent = self.processed_preview_click_handler
 
 		self.CPUpercentage = QtWidgets.QLabel("0 %")
-		self.gameClock = QtWidgets.QLabel("00:00")
-		self.shotClock = QtWidgets.QLabel("00")
 
-		#grid.addWidget(self.ui_create_ocr_tree_group(), 0, 3, 6, 1) # MUST BE HERE, initializes all QObject lists
+		self.previewZoomLevel = 0
+
 		self.g_ocr_group = self.ui_create_ocr_group()
 		grid.addWidget(self.g_ocr_group, 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.ui_create_camera_preview_group(), 0, 0, 4, 1) # MUST BE HERE, initializes all QObject lists
@@ -182,19 +172,36 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(self.ui_create_debug_group(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.updateScoreboard, 5, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
 		
+		self.init_ocr_worker()
 		self.init_WebSocketsWorker()
+
+		self.startSCOCRButton.clicked.connect(self.start_ocr_worker)
+		self.pauseSCOCRButton.clicked.connect(self.pause_ocr_worker)
+		self.terminateSCOCRButton.clicked.connect(self.terminate_ocr_worker)
 
 		grid.setColumnStretch(0,100)
 		grid.setColumnStretch(1,50)
-		grid.setColumnStretch(2,100)
 
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(10)
 
 		self.setLayout(grid)
 
+	def processed_preview_zoom_handler(self,event):
+		if event.angleDelta().y() < 0:
+			self.previewZoomLevel -= 1
+		else:
+			self.previewZoomLevel += 1	
+
+	def raw_preview_click_handler(self, event):
+		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
+
+	def processed_preview_click_handler(self, event):
+		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
+
 	def closeEvent(self, event):
-		self.terminate_SCOCRWorker()
+		if self.ocr_worker._isRunning:
+			self.terminate_ocr_worker()
 
 	def sendCommandToBrowser(self):
 
@@ -212,14 +219,15 @@ class Window(QtWidgets.QWidget):
 		self.webSocketsWorker.error.connect(self.close)
 		self.webSocketsWorker.start()# Call to start WebSockets server
 
-	def init_SCOCRWorker(self):
+	def init_ocr_worker(self):
 		self.ocr_worker_params = ScOcrWorkerParams(
-				ssocrArguments=self.SCssocrArguments.text(),
 				waitKey=self.SCwaitKey.text(),
 				videoCaptureIndex=self.SCvideoCaptureIndex.text(),
 				rotation=self.SCrotation.text(),
 				skewx=self.SCskewx.text(),
+				skewy=self.SCskewy.text(),
 				erosion=self.SCerosion.text(),
+				dilate=self.SCdilate.text(),
 				threshold=self.SCthreshold.text(),
 				cropLeft=self.SCcropLeft.text(),
 				cropTop=self.SCcropTop.text()
@@ -230,23 +238,26 @@ class Window(QtWidgets.QWidget):
 		self.ocr_worker.alldigits.connect(self.ocr_result_handler_new)
 		self.ocr_worker.processedFrameFlag.connect(lambda: self.CPUpercentage.setText('CPU: ' + str(psutil.cpu_percent()) + "%"))
 		self.ocr_worker.QImageFrame.connect(self.ocr_preview_image_handler)
-		self.ocr_worker.run() # Call to start OCR openCV thread
+
+	def start_ocr_worker(self):
+		if self.ocr_worker is not None:
+			self.ocr_worker.run()
 
 	def pause_ocr_worker(self):
-		self.ocr_worker.pause()
-
-	def terminate_SCOCRWorker(self):
 		if self.ocr_worker is not None:
-			self.ocr_worker.quit()
+			self.ocr_worker.pause()
+
+	def terminate_ocr_worker(self):
+		if self.ocr_worker is not None:
 			self.ocr_worker.kill()
-			del(self.ocr_worker)
 
 	def ocr_preview_image_handler(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
 		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(600, 600, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(600, 600, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(600*(1+self.previewZoomLevel*0.01), 600*(1+self.previewZoomLevel*0.01), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
+	@Slot(object)
 	def ocr_result_handler_new(self, digits):
 		for digit in digits:
 			self.g_ocr_coords[digit].lbl_value.setText(str(digits[digit].value))
@@ -279,69 +290,56 @@ class Window(QtWidgets.QWidget):
 		self.ui_update_ocr_group()
 		self.update_state()
 
+	def update_sliders(self):
+		self.skewXSlider.setValue(int(self.SCskewx.text()))
+		self.skewYSlider.setValue(int(self.SCskewy.text()))
+		self.threshSlider.setValue(int(self.SCthreshold.text()))
+		self.erosionSlider.setValue(int(self.SCerosion.text()))
+		self.dilateSlider.setValue(int(self.SCdilate.text()))
+		self.update_state()
+
 	def update_state(self):
+
+		self.SCskewx.setText(str(self.skewXSlider.value()))
+		self.SCskewy.setText(str(self.skewYSlider.value()))
+		self.SCthreshold.setText(str(self.threshSlider.value()))
+		self.SCerosion.setText(str(self.erosionSlider.value()))
+		self.SCdilate.setText(str(self.dilateSlider.value()))
+
  		# saves coords list without graphics objects
 		self.qsettings.setValue("newOCRcoordinates", self.get_ocr_coodinates_list())
 
 		# save other parameters
-		self.qsettings.setValue("SCssocrArguments", self.SCssocrArguments.text())
 		self.qsettings.setValue("SCrotation", self.SCrotation.text())
 		self.qsettings.setValue("SCskewx", self.SCskewx.text())
+		self.qsettings.setValue("SCskewy", self.SCskewy.text())
 		self.qsettings.setValue("SCThreshold", self.SCthreshold.text())
 		self.qsettings.setValue("SCerosion", self.SCerosion.text())
+		self.qsettings.setValue("SCdilate", self.SCdilate.text())
 		self.qsettings.setValue("TCrop", self.SCcropTop.text())
 		self.qsettings.setValue("LCrop", self.SCcropLeft.text())
 		self.qsettings.setValue("SCwaitKey", self.SCwaitKey.text())
 		self.qsettings.setValue("SCvideoCaptureIndex", self.SCvideoCaptureIndex.text())
 		self.qsettings.setValue("SCwebsocketAddress", self.SCwebsocketAddress.text())
-		self.qsettings.setValue("SCskewx", self.slider_skewx.value())
 		
 		try:
 			self.ocr_worker_params = ScOcrWorkerParams(
-				ssocrArguments=self.SCssocrArguments.text(),
 				waitKey=self.SCwaitKey.text(),
 				videoCaptureIndex=self.SCvideoCaptureIndex.text(),
 				rotation=self.SCrotation.text(),
 				skewx=self.SCskewx.text(),
+				skewy=self.SCskewy.text(),
 				erosion=self.SCerosion.text(),
+				dilate=self.SCdilate.text(),
 				threshold=self.SCthreshold.text(),
 				cropLeft=self.SCcropLeft.text(),
 				cropTop=self.SCcropTop.text()
 				)
 			self.ocr_worker.update_params(self.ocr_worker_params)
 			self.ocr_worker.update_ocr_coordinates(self.g_ocr_coords)
-		except:
+		except Exception as e:
+			print("Unable to update OCR worker params. OCR probably not running.")
 			pass
-	
-	def ui_create_ocr_tree_group(self):
-		groupBox = QtWidgets.QGroupBox("Tree Bounding Boxes")
-		groupBox.setStyleSheet(GroupBoxStyleSheet)
-
-		tree =  QtWidgets.QTreeWidget()
-
-		tree.setHeaderHidden(False)
-		tree.setColumnCount(3)
-		tree.setHeaderLabels(["name", "x coords", "y coords"])
-
-		testitem = QtWidgets.QTreeWidgetItem(None, ["testitem", "aaaa", "bbbb"])
-		testitem2 = QtWidgets.QTreeWidgetItem(None, ["testitem2", "cccc", "dddd"])
-
-		items = []
-		for i in range(10):
-			items.append(QtWidgets.QTreeWidgetItem(None, ["test"]))
-		tree.insertTopLevelItems(0, items)
-
-		items[2].addChild(testitem)
-
-		items[5].addChild(testitem2)
-
-		layout = QtWidgets.QVBoxLayout()
-
-		layout.addWidget(tree)
-
-		groupBox.setLayout(layout)
-
-		return groupBox
 
 	def ui_update_ocr_group(self):
 
@@ -446,46 +444,97 @@ class Window(QtWidgets.QWidget):
 		groupBox = QtWidgets.QGroupBox("Camera Parameters")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
+		self.skewXSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+		self.skewXSlider.setMinimum(-45)
+		self.skewXSlider.setMaximum(45)
+		self.skewXSlider.setValue(int(self.qsettings.value("SCskewx", "0")))
+
+		self.skewYSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+		self.skewYSlider.setMinimum(-45)
+		self.skewYSlider.setMaximum(45)
+		self.skewYSlider.setValue(int(self.qsettings.value("SCskewy", "0")))
+
+		self.threshSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)		
+		self.threshSlider.setMinimum(0)
+		self.threshSlider.setMaximum(255)
+		self.threshSlider.setValue(int(self.qsettings.value("SCthreshold", "0")))
+
+		self.erosionSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)		
+		self.erosionSlider.setMinimum(0)
+		self.erosionSlider.setMaximum(25)
+		self.erosionSlider.setValue(int(self.qsettings.value("SCerosion", "0")))
+
+		self.dilateSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)		
+		self.dilateSlider.setMinimum(0)
+		self.dilateSlider.setMaximum(25)
+		self.dilateSlider.setValue(int(self.qsettings.value("SCdilate", "0")))
+
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(5)
 
-		grid.addWidget(QtWidgets.QLabel("Rotation"), 0, 0, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Skew X"), 0, 1, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Threshold"), 0, 2, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Erosions"), 0, 3, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Top Crop"), 0, 4, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Left Crop"), 0, 5, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("WaitKey"), 2, 0)
-		grid.addWidget(self.SCrotation, 1, 0, 1, 1)
-		grid.addWidget(self.SCskewx, 1, 1, 1, 1)
-		grid.addWidget(self.SCthreshold, 1, 2, 1, 1)
-		grid.addWidget(self.SCerosion, 1, 3, 1, 1)
-		grid.addWidget(self.SCcropTop, 1, 4, 1, 1)
-		grid.addWidget(self.SCcropLeft, 1, 5, 1, 1)
-		grid.addWidget(self.SCwaitKey, 3, 0)
-		grid.addWidget(self.startSCOCRButton, 3, 2)
-		grid.addWidget(self.pauseSCOCRButton, 3, 3)
-		grid.addWidget(self.terminateSCOCRButton, 3, 4)
-		#grid.addWidget(self.slider_skewx, 4, 0, 1, 3)
-		
-		grid.addWidget(QtWidgets.QLabel("Camera source"), 4, 0, 1, 6)
-		grid.addWidget(self.SCvideoCaptureIndex, 5, 0, 1, 6)
+		layoutRow = 0
 
-		grid.addWidget(QtWidgets.QLabel("Websocket address"), 6, 0, 1, 6)
-		grid.addWidget(self.SCwebsocketAddress, 7, 0, 1, 6)
+		grid.addWidget(QtWidgets.QLabel("Rotation"), layoutRow, 0, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Skew X"), layoutRow, 1, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Skew Y"), layoutRow, 2, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Threshold"), layoutRow, 3, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Erosion"), layoutRow, 4, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Dilate"), layoutRow, 5, 1, 1)
 
-		self.SCssocrArguments.editingFinished.connect(self.update_state)
+
+		layoutRow += 1
+		grid.addWidget(self.SCrotation, layoutRow, 0, 1, 1)
+		grid.addWidget(self.SCskewx, layoutRow, 1, 1, 1)
+		grid.addWidget(self.SCskewy, layoutRow, 2, 1, 1)
+		grid.addWidget(self.SCthreshold, layoutRow, 3, 1, 1)
+		grid.addWidget(self.SCerosion, layoutRow, 4, 1, 1)
+		grid.addWidget(self.SCdilate, layoutRow, 5, 1, 1)
+
+		layoutRow += 1
+		grid.addWidget(QtWidgets.QLabel("WaitKey"), layoutRow, 0)
+		grid.addWidget(self.skewXSlider, layoutRow, 1)
+		grid.addWidget(self.skewYSlider, layoutRow, 2)
+		grid.addWidget(self.threshSlider, layoutRow, 3)
+		grid.addWidget(self.erosionSlider, layoutRow, 4)
+		grid.addWidget(self.dilateSlider, layoutRow, 5)
+
+		layoutRow += 1
+		grid.addWidget(self.SCwaitKey, layoutRow, 0)
+		grid.addWidget(QtWidgets.QLabel("Top Crop"), layoutRow, 4, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Left Crop"), layoutRow, 5, 1, 1)
+
+		layoutRow += 1
+		grid.addWidget(self.SCcropTop, layoutRow, 4)
+		grid.addWidget(self.SCcropLeft, layoutRow, 5)
+
+		layoutRow += 1
+		grid.addWidget(QtWidgets.QLabel("Source"), layoutRow, 0, 1, 1)
+		grid.addWidget(self.SCvideoCaptureIndex, layoutRow, 1, 1, 5)
+
+		layoutRow += 1
+		grid.addWidget(QtWidgets.QLabel("WS address"), layoutRow, 0, 1, 1)
+		grid.addWidget(self.SCwebsocketAddress, layoutRow, 1, 1, 5)
+
 		self.SCrotation.editingFinished.connect(self.update_state)
-		self.SCskewx.editingFinished.connect(self.update_state)
-		self.SCerosion.editingFinished.connect(self.update_state)
-		self.SCthreshold.editingFinished.connect(self.update_state)
+
+		self.SCskewx.editingFinished.connect(self.update_sliders)
+		self.SCskewy.editingFinished.connect(self.update_sliders)
+		self.SCerosion.editingFinished.connect(self.update_sliders)
+		self.SCdilate.editingFinished.connect(self.update_sliders)
+		self.SCthreshold.editingFinished.connect(self.update_sliders)
+
 		self.SCwaitKey.editingFinished.connect(self.update_state)
 		self.SCvideoCaptureIndex.editingFinished.connect(self.update_state)
 		self.SCwebsocketAddress.editingFinished.connect(self.update_state)
 		self.SCcropLeft.editingFinished.connect(self.update_state)
 		self.SCcropTop.editingFinished.connect(self.update_state)
-		self.slider_skewx.valueChanged.connect(self.update_state)
+
+		self.skewXSlider.valueChanged.connect(self.update_state)
+		self.skewYSlider.valueChanged.connect(self.update_state)
+		self.threshSlider.valueChanged.connect(self.update_state)
+		self.erosionSlider.valueChanged.connect(self.update_state)
+		self.dilateSlider.valueChanged.connect(self.update_state)
 
 		grid.setColumnStretch(0,50)
 		grid.setColumnStretch(1,25)
@@ -505,12 +554,11 @@ class Window(QtWidgets.QWidget):
 		largeFont.setPointSize(22)
 
 		self.CPUpercentage.setFont(largeFont)
-		self.gameClock.setFont(largeFont)
-		self.shotClock.setFont(largeFont)
 
 		grid.addWidget(self.CPUpercentage, 0, 0)
-		grid.addWidget(self.gameClock, 0, 1)
-		grid.addWidget(self.shotClock, 0, 2)
+		grid.addWidget(self.startSCOCRButton, 1, 0)
+		grid.addWidget(self.pauseSCOCRButton, 1, 1)
+		grid.addWidget(self.terminateSCOCRButton, 1, 2)
 
 		groupBox.setLayout(grid)
 		return groupBox
