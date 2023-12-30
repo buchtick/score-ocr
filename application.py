@@ -8,12 +8,13 @@ from datetime import datetime
 
 import sys
 
+import logging
+import logging.config
+
 import json
 import os
 import urllib.request, urllib.error, urllib.parse
 import webbrowser
-
-import psutil # CPU usage
 
 from ocrworker import ScOcrWorker, ScOcrWorkerParams
 from wsworker import WebSocketsWorker
@@ -23,6 +24,8 @@ if getattr(sys, 'frozen', False):
 elif __file__:
 	_applicationPath = os.path.dirname(__file__)
 
+logging.config.fileConfig('logging.conf')
+
 _settingsFilePath = os.path.join(_applicationPath, 'settings.ini')
 
 GroupBoxStyleSheet = "QGroupBox { border: 1px solid #AAAAAA;margin-top: 12px;} QGroupBox::title {top: -5px;left: 10px;}"
@@ -30,12 +33,19 @@ GroupBoxStyleSheet = "QGroupBox { border: 1px solid #AAAAAA;margin-top: 12px;} Q
 class MainWindow(QtWidgets.QMainWindow):
 	def __init__(self, parent=None):
 		super(MainWindow, self).__init__(parent)
+		logging.info("Application startup")
 
 		######## QSettings #########
 		self.qsettings = QSettings(_settingsFilePath, QSettings.IniFormat)
 		self.qsettings.setFallbacksEnabled(False)
 
 		######## ACTIONS ###########
+		saveSetting = QAction('Export settings', self)
+		saveSetting.triggered.connect(self.handleExportSettings)
+
+		loadSetting = QAction('Import settings', self)
+		loadSetting.triggered.connect(self.handleImportSettings)
+
 		exitItem = QAction('Exit', self)
 		exitItem.setStatusTip('Exit application...')
 		exitItem.triggered.connect(self.close)
@@ -43,6 +53,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		menubar = self.menuBar()
 		fileMenu = menubar.addMenu('&File')
+		fileMenu.addAction(saveSetting)
+		fileMenu.addAction(loadSetting)
 		fileMenu.addAction(exitItem)
 
 
@@ -55,6 +67,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
 	def closeEvent(self, event):
 		self.main_widget.close()
+
+	def handleExportSettings(self):
+		logging.info("Triggered setting export.")
+		pass
+
+	def handleImportSettings(self):
+		logging.info("Triggered setting import.")
+		pass
 
 class OcrCoordinateGui():
 	def __init__(self, name, coords = None):
@@ -107,6 +127,9 @@ class OcrCoordinateGui():
 	def get_text_coords(self):
 		return [self.tl_coord_field_x.text(), self.tl_coord_field_y.text(), self.br_coord_field_x.text(), self.br_coord_field_y.text()]
 	
+	def get_coords(self):
+		return [int('0' + self.tl_coord_field_x.text()), int('0' + self.tl_coord_field_y.text()), int(self.br_coord_field_x.text()), int(self.br_coord_field_y.text())]
+	
 	def set_coords(self, coords):
 		self.tl_coord_field_x.setText(coords[0])
 		self.tl_coord_field_y.setText(coords[1])
@@ -123,61 +146,29 @@ class OcrCoordinateGui():
 class Window(QtWidgets.QWidget):
 	def __init__(self, parent):
 		super(Window, self).__init__(parent)
-		grid = QtWidgets.QGridLayout()
+		
 		self.qsettings = QSettings(_settingsFilePath, QSettings.IniFormat)
 		self.qsettings.setFallbacksEnabled(False)
-
-		self.updateScoreboard = QtWidgets.QPushButton("Update")
-		self.updateScoreboard.clicked.connect(self.sendCommandToBrowser)
 		
-		self.ocr_worker = None
 		#parameters for OCR Worker - gets populated on clicking Start OCR
-		self.ocr_worker_params = []
+		self.ocr_worker = None
+		self.ocr_worker_params = None
+		self.ws_worker = None
+
+		#digit coordinates list
 		self.g_ocr_coords = []
 
-		self.init_ocr_coordinates_list_new()
-
-		self.SCrotation = QtWidgets.QLineEdit(self.qsettings.value("SCrotation", "0"))
-		self.SCskewx = QtWidgets.QLineEdit(self.qsettings.value("SCskewx", "5"))
-		self.SCskewy = QtWidgets.QLineEdit(self.qsettings.value("SCskewy", "5"))
-		self.SCerosion = QtWidgets.QLineEdit(self.qsettings.value("SCerosion", "2"))
-		self.SCdilate = QtWidgets.QLineEdit(self.qsettings.value("SCdilate", "0"))
-		self.SCthreshold = QtWidgets.QLineEdit(self.qsettings.value("SCthreshold", "127"))
-		self.SCcropLeft = QtWidgets.QLineEdit(self.qsettings.value("LCrop", "0"))
-		self.SCcropTop = QtWidgets.QLineEdit(self.qsettings.value("TCrop", "0"))
-		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
-		self.SCwebsocketAddress = QtWidgets.QLineEdit(self.qsettings.value("SCwebsocketAddress", 'ws://localhost:9000'))
-		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
-		
-		self.startSCOCRButton = QtWidgets.QPushButton("Start OCR")
-		self.pauseSCOCRButton = QtWidgets.QPushButton("Pause OCR")
-		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
-		
-
-		self.previewImageRaw = QtWidgets.QLabel("")
-		self.previewImageRaw.mousePressEvent = self.raw_preview_click_handler
-		self.previewImageRaw.mouseReleaseEvent = self.raw_preview_click_handler
-		self.previewImageProcessed = QtWidgets.QLabel("")
-		self.previewImageProcessed.wheelEvent = self.processed_preview_zoom_handler
-		self.previewImageProcessed.mousePressEvent = self.processed_preview_click_handler
-
-		self.CPUpercentage = QtWidgets.QLabel("0 %")
+		self.init_ocr_coordinates_list()
 
 		self.previewZoomLevel = 0
 
+		#construct the GUI
+		grid = QtWidgets.QGridLayout()
 		self.g_ocr_group = self.ui_create_ocr_group()
 		grid.addWidget(self.g_ocr_group, 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.ui_create_camera_preview_group(), 0, 0, 4, 1) # MUST BE HERE, initializes all QObject lists
 		grid.addWidget(self.ui_create_parameters_group(), 4, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.ui_create_debug_group(), 4, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.updateScoreboard, 5, 1, 1, 1) # MUST BE HERE, initializes all QObject lists
-		
-		self.init_ocr_worker()
-		self.init_WebSocketsWorker()
-
-		self.startSCOCRButton.clicked.connect(self.start_ocr_worker)
-		self.pauseSCOCRButton.clicked.connect(self.pause_ocr_worker)
-		self.terminateSCOCRButton.clicked.connect(self.terminate_ocr_worker)
+		grid.addWidget(self.ui_create_debug_group(), 4, 1, 2, 1) # MUST BE HERE, initializes all QObject lists
 
 		grid.setColumnStretch(0,100)
 		grid.setColumnStretch(1,50)
@@ -187,16 +178,20 @@ class Window(QtWidgets.QWidget):
 
 		self.setLayout(grid)
 
-	def processed_preview_zoom_handler(self,event):
+		#initialize worker threads
+		self.init_ocr_worker()
+		self.init_ws_worker()
+
+	def handle_preview_video_zoom(self,event):
 		if event.angleDelta().y() < 0:
 			self.previewZoomLevel -= 1
 		else:
 			self.previewZoomLevel += 1	
 
-	def raw_preview_click_handler(self, event):
+	def handle_preview_video_click(self, event):
 		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
 
-	def processed_preview_click_handler(self, event):
+	def handle_processed_video_click(self, event):
 		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
 
 	def closeEvent(self, event):
@@ -212,12 +207,12 @@ class Window(QtWidgets.QWidget):
 		for key, param in enumerate(self.g_ocr_coords):
 			response[param.name] = param.value
 
-		self.webSocketsWorker.send(json.dumps(response))
+		self.ws_worker.send(json.dumps(response))
 
-	def init_WebSocketsWorker(self):
-		self.webSocketsWorker = WebSocketsWorker(serverAddress=self.SCwebsocketAddress.text())
-		self.webSocketsWorker.error.connect(self.close)
-		self.webSocketsWorker.start()# Call to start WebSockets server
+	def init_ws_worker(self):
+		self.ws_worker = WebSocketsWorker(serverAddress=self.SCwebsocketAddress.text())
+		self.ws_worker.error.connect(self.close)
+		self.ws_worker.start()# Call to start WebSockets server
 
 	def init_ocr_worker(self):
 		self.ocr_worker_params = ScOcrWorkerParams(
@@ -230,14 +225,15 @@ class Window(QtWidgets.QWidget):
 				dilate=self.SCdilate.text(),
 				threshold=self.SCthreshold.text(),
 				cropLeft=self.SCcropLeft.text(),
-				cropTop=self.SCcropTop.text()
+				cropTop=self.SCcropTop.text(),
+				autocrop_enabled=False,
+				autocrop_coords=[0,0,0,0]
 				)
 
 		self.ocr_worker = ScOcrWorker(self.g_ocr_coords, self.ocr_worker_params)
 		self.ocr_worker.error.connect(self.close)
-		self.ocr_worker.alldigits.connect(self.ocr_result_handler_new)
-		self.ocr_worker.processedFrameFlag.connect(lambda: self.CPUpercentage.setText('CPU: ' + str(psutil.cpu_percent()) + "%"))
-		self.ocr_worker.QImageFrame.connect(self.ocr_preview_image_handler)
+		self.ocr_worker.allDigitGroups.connect(self.handler_ocr_result_groups)
+		self.ocr_worker.QImageFrame.connect(self.handler_ocr_preview_image)
 
 	def start_ocr_worker(self):
 		if self.ocr_worker is not None:
@@ -251,18 +247,19 @@ class Window(QtWidgets.QWidget):
 		if self.ocr_worker is not None:
 			self.ocr_worker.kill()
 
-	def ocr_preview_image_handler(self, QImageFrame):
+	@Slot(list)
+	def handler_ocr_preview_image(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
-		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(600, 600, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(600*(1+self.previewZoomLevel*0.01), 600*(1+self.previewZoomLevel*0.01), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(300, 300, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(self.previewImageProcessed.width(), self.previewImageProcessed.height(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
 	@Slot(object)
-	def ocr_result_handler_new(self, digits):
-		for digit in digits:
-			self.g_ocr_coords[digit].lbl_value.setText(str(digits[digit].value))
-			self.g_ocr_coords[digit].value = digits[digit].value
-		
+	def handler_ocr_result_groups(self, digit_groups):
+		for i, digitgrp in enumerate(digit_groups):
+			self.g_ocr_coords[i].lbl_value.setText(str(digitgrp.value))
+			self.g_ocr_coords[i].value = digitgrp.value
+
 		self.sendCommandToBrowser()
 
 	def get_ocr_coodinates_list(self):
@@ -272,7 +269,7 @@ class Window(QtWidgets.QWidget):
 
 		return response
 
-	def init_ocr_coordinates_list_new(self):
+	def init_ocr_coordinates_list(self):
 		_loaded_coords = self.qsettings.value("newOCRcoordinates")
 
 		if _loaded_coords:
@@ -280,12 +277,12 @@ class Window(QtWidgets.QWidget):
 			for key,coord in _loaded_coords.items():
 				self.g_ocr_coords.append(OcrCoordinateGui(coord[0],coord[1]))
 	
-	def add_digit_handler(self):
+	def handler_digit_add(self):
 		self.g_ocr_coords.append(OcrCoordinateGui("new_digit"))
 		self.ui_update_ocr_group()
 		self.update_state()
 
-	def remove_digit_handler(self):
+	def handler_digit_remove(self):
 		self.g_ocr_coords.pop() # handle pop from empty list
 		self.ui_update_ocr_group()
 		self.update_state()
@@ -333,7 +330,9 @@ class Window(QtWidgets.QWidget):
 				dilate=self.SCdilate.text(),
 				threshold=self.SCthreshold.text(),
 				cropLeft=self.SCcropLeft.text(),
-				cropTop=self.SCcropTop.text()
+				cropTop=self.SCcropTop.text(),
+				autocrop_enabled=False,
+				autocrop_coords=[0,0,0,0]
 				)
 			self.ocr_worker.update_params(self.ocr_worker_params)
 			self.ocr_worker.update_ocr_coordinates(self.g_ocr_coords)
@@ -390,9 +389,9 @@ class Window(QtWidgets.QWidget):
 		dividerLine.setFrameShadow(QtWidgets.QFrame.Sunken)
 
 		self.add_ocr_digit_button = QtWidgets.QPushButton("Add digit")
-		self.add_ocr_digit_button.clicked.connect(self.add_digit_handler)
+		self.add_ocr_digit_button.clicked.connect(self.handler_digit_add)
 		self.remove_ocr_digit_button = QtWidgets.QPushButton("Remove digit")
-		self.remove_ocr_digit_button.clicked.connect(self.remove_digit_handler)
+		self.remove_ocr_digit_button.clicked.connect(self.handler_digit_remove)
 
 		grid.addWidget(self.add_ocr_digit_button, 0, 5)
 		grid.addWidget(self.remove_ocr_digit_button, 0 , 6)
@@ -444,6 +443,19 @@ class Window(QtWidgets.QWidget):
 		groupBox = QtWidgets.QGroupBox("Camera Parameters")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
+		#define widgets
+		self.SCrotation = QtWidgets.QLineEdit(self.qsettings.value("SCrotation", "0"))
+		self.SCskewx = QtWidgets.QLineEdit(self.qsettings.value("SCskewx", "5"))
+		self.SCskewy = QtWidgets.QLineEdit(self.qsettings.value("SCskewy", "5"))
+		self.SCerosion = QtWidgets.QLineEdit(self.qsettings.value("SCerosion", "2"))
+		self.SCdilate = QtWidgets.QLineEdit(self.qsettings.value("SCdilate", "0"))
+		self.SCthreshold = QtWidgets.QLineEdit(self.qsettings.value("SCthreshold", "127"))
+		self.SCcropLeft = QtWidgets.QLineEdit(self.qsettings.value("LCrop", "0"))
+		self.SCcropTop = QtWidgets.QLineEdit(self.qsettings.value("TCrop", "0"))
+		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
+		self.SCwebsocketAddress = QtWidgets.QLineEdit(self.qsettings.value("SCwebsocketAddress", 'ws://localhost:9000'))
+		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
+
 		self.skewXSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
 		self.skewXSlider.setMinimum(-45)
 		self.skewXSlider.setMaximum(45)
@@ -469,19 +481,28 @@ class Window(QtWidgets.QWidget):
 		self.dilateSlider.setMaximum(25)
 		self.dilateSlider.setValue(int(self.qsettings.value("SCdilate", "0")))
 
+		self.chkAutocrop = QtWidgets.QCheckBox()
+		self.chkAutocrop.setCheckState(Qt.CheckState.Unchecked)
+
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(5)
+		grid.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+		#compose the grid
 		layoutRow = 0
+		grid.addWidget(QtWidgets.QLabel("Autocrop enabled"), layoutRow, 0, 1, 1)
 
+		layoutRow += 1
+		grid.addWidget(self.chkAutocrop, layoutRow, 0)
+
+		layoutRow += 1
 		grid.addWidget(QtWidgets.QLabel("Rotation"), layoutRow, 0, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("Skew X"), layoutRow, 1, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("Skew Y"), layoutRow, 2, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("Threshold"), layoutRow, 3, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("Erosion"), layoutRow, 4, 1, 1)
 		grid.addWidget(QtWidgets.QLabel("Dilate"), layoutRow, 5, 1, 1)
-
 
 		layoutRow += 1
 		grid.addWidget(self.SCrotation, layoutRow, 0, 1, 1)
@@ -546,16 +567,29 @@ class Window(QtWidgets.QWidget):
 		groupBox = QtWidgets.QGroupBox("Debug")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
+		#define widgets
+		self.startSCOCRButton = QtWidgets.QPushButton("Start OCR")
+		self.pauseSCOCRButton = QtWidgets.QPushButton("Pause OCR")
+		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
+
+		self.previewImageRaw = QtWidgets.QLabel("")
+		self.previewImageRaw.mousePressEvent = self.handle_preview_video_click
+		self.previewImageRaw.mouseReleaseEvent = self.handle_preview_video_click
+
+		self.startSCOCRButton.clicked.connect(self.start_ocr_worker)
+		self.pauseSCOCRButton.clicked.connect(self.pause_ocr_worker)
+		self.terminateSCOCRButton.clicked.connect(self.terminate_ocr_worker)
+
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(5)
 
-		largeFont = QFont()
-		largeFont.setPointSize(22)
+		_img = QPixmap.fromImage(QImage(200, 113, QImage.Format_RGB888))
+		_img.fill(0)
+		self.previewImageRaw.setPixmap(_img)
+		self.previewImageRaw.setAlignment(Qt.AlignCenter)
 
-		self.CPUpercentage.setFont(largeFont)
-
-		grid.addWidget(self.CPUpercentage, 0, 0)
+		grid.addWidget(self.previewImageRaw, 0, 0, 1, 3)
 		grid.addWidget(self.startSCOCRButton, 1, 0)
 		grid.addWidget(self.pauseSCOCRButton, 1, 1)
 		grid.addWidget(self.terminateSCOCRButton, 1, 2)
@@ -567,18 +601,21 @@ class Window(QtWidgets.QWidget):
 		groupBox = QtWidgets.QGroupBox("Preview")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
+		#define widgets
+		self.previewImageProcessed = QtWidgets.QLabel("")
+		self.previewImageProcessed.wheelEvent = self.handle_preview_video_zoom
+		self.previewImageProcessed.mousePressEvent = self.handle_processed_video_click
+		self.previewImageProcessed.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(5)
 		grid.setVerticalSpacing(5)
 
 		_img = QPixmap.fromImage(QImage(200, 113, QImage.Format_RGB888))
 		_img.fill(0)
-		self.previewImageRaw.setPixmap(_img)
 		self.previewImageProcessed.setPixmap(_img)
-		self.previewImageRaw.setAlignment(Qt.AlignCenter)
 		self.previewImageProcessed.setAlignment(Qt.AlignCenter)
 
-		grid.addWidget(self.previewImageRaw, 0, 0)
 		grid.addWidget(self.previewImageProcessed, 1, 0)
 
 		groupBox.setLayout(grid)
@@ -587,4 +624,4 @@ class Window(QtWidgets.QWidget):
 if __name__ == '__main__':
 	app = QtWidgets.QApplication(sys.argv)
 	ex = MainWindow()
-	sys.exit(app.exec_())
+	sys.exit(app.exec())
