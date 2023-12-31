@@ -287,11 +287,9 @@ class ScOcrWorker(QtCore.QThread):
 
 				# pause the OCR session
 				if self._isPaused:
-					cv2.waitKey(int(self.params.waitKey))
-					continue
-
-				# READ THE FRAME
-				success, img = self.cam.read()
+					pass
+				else:
+					success, img = self.cam.read()
 
 				# get out if the frame is not captured
 				if not success:
@@ -322,7 +320,7 @@ class ScOcrWorker(QtCore.QThread):
 
 				alpha = 0.6
 
-				img_disp = cv2.addWeighted(img_disp, 1, shapes, 1-alpha, 0)
+				img_disp = cv2.addWeighted(img_disp, 1, shapes, 1-alpha, 0.5)
 
 				##### SEND QIMAGE TO DISPLAY IN PYSIDE WINDOW #####
 				height, width, bPC = img.shape

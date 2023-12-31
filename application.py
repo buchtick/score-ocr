@@ -4,15 +4,17 @@ from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import *
 from PySide6.QtGui import *
 
-from datetime import datetime
-
 import sys
+import json
+import os
+
+import qdarktheme
+
+from datetime import datetime
 
 import logging
 import logging.config
 
-import json
-import os
 import urllib.request, urllib.error, urllib.parse
 import webbrowser
 
@@ -28,7 +30,139 @@ logging.config.fileConfig('logging.conf')
 
 _settingsFilePath = os.path.join(_applicationPath, 'settings.ini')
 
-GroupBoxStyleSheet = "QGroupBox { border: 1px solid #AAAAAA;margin-top: 12px;} QGroupBox::title {top: -5px;left: 10px;}"
+GroupBoxStyleSheet = "QGroupBox { border: 1px solid #AAAAAA;margin-top: 10px;} QGroupBox::title {top: 0px;left: 5px;}"
+
+class CropWindow(QtWidgets.QWidget):
+	crop_coordinates = QtCore.Signal(object)
+	def __init__(self):
+		super().__init__()
+		layout = QtWidgets.QVBoxLayout()
+
+		self.isRunning = False
+
+		self.previewOriginalWidth = 0
+		self.previewOriginalHeight = 0
+
+		self.crop_coords = []
+
+		self.previewImage = QtWidgets.QLabel("Camera raw feed not available.")
+		self.previewImage.setAlignment(Qt.AlignCenter)
+		self.previewImage.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+		self.previewImage.mousePressEvent = self.handle_processed_video_click
+
+		self.resize(800,600)
+
+		self.coord_1_x = QtWidgets.QLineEdit()
+		self.coord_1_y = QtWidgets.QLineEdit()
+		self.coord_2_x = QtWidgets.QLineEdit()
+		self.coord_2_y = QtWidgets.QLineEdit()
+		self.coord_3_x = QtWidgets.QLineEdit()
+		self.coord_3_y = QtWidgets.QLineEdit()
+		self.coord_4_x = QtWidgets.QLineEdit()
+		self.coord_4_y = QtWidgets.QLineEdit()
+
+		self.coord_1_x.setValidator(QIntValidator(0, 9999, self))
+		self.coord_1_y.setValidator(QIntValidator(0, 9999, self))
+		self.coord_2_x.setValidator(QIntValidator(0, 9999, self))
+		self.coord_2_y.setValidator(QIntValidator(0, 9999, self))
+		self.coord_3_x.setValidator(QIntValidator(0, 9999, self))
+		self.coord_3_y.setValidator(QIntValidator(0, 9999, self))
+		self.coord_4_x.setValidator(QIntValidator(0, 9999, self))
+		self.coord_4_y.setValidator(QIntValidator(0, 9999, self))
+
+		self.coord_1_x.setEnabled(False)
+		self.coord_1_y.setEnabled(False)
+		self.coord_2_x.setEnabled(False)
+		self.coord_2_y.setEnabled(False)
+		self.coord_3_x.setEnabled(False)
+		self.coord_3_y.setEnabled(False)
+		self.coord_4_x.setEnabled(False)
+		self.coord_4_y.setEnabled(False)
+
+		self.btn_save = QtWidgets.QPushButton("Save coords")
+		self.btn_save.clicked.connect(self.on_click_save)
+		self.btn_save.setEnabled(False)
+
+		self.btn_clear = QtWidgets.QPushButton("Clear")
+		self.btn_clear.clicked.connect(self.on_click_clear)
+
+		gridLayout = QtWidgets.QGridLayout()
+		gridLayout.addWidget(QtWidgets.QLabel("Coord 1"), 0, 0)
+		gridLayout.addWidget(self.coord_1_x, 0, 1)
+		gridLayout.addWidget(self.coord_1_y, 0, 2)
+		gridLayout.addWidget(QtWidgets.QLabel("Coord 2"), 1, 0)
+		gridLayout.addWidget(self.coord_2_x, 1, 1)
+		gridLayout.addWidget(self.coord_2_y, 1, 2)
+		gridLayout.addWidget(QtWidgets.QLabel("Coord 3"), 2, 0)
+		gridLayout.addWidget(self.coord_3_x, 2, 1)
+		gridLayout.addWidget(self.coord_3_y, 2, 2)
+		gridLayout.addWidget(QtWidgets.QLabel("Coord 4"), 3, 0)
+		gridLayout.addWidget(self.coord_4_x, 3, 1)
+		gridLayout.addWidget(self.coord_4_y, 3, 2)
+		gridLayout.addWidget(self.btn_save, 4, 1)
+		gridLayout.addWidget(self.btn_clear, 4, 2)
+
+		layout.addWidget(self.previewImage)
+		layout.addLayout(gridLayout)
+
+		self.setLayout(layout)
+
+	def setOriginalPreviewSize(self, w, h):
+		self.previewOriginalWidth = w
+		self.previewOriginalHeight = h
+		if(w > 0 and h > 0):
+			self.coord_1_x.setEnabled(True)
+			self.coord_1_y.setEnabled(True)
+			self.coord_2_x.setEnabled(True)
+			self.coord_2_y.setEnabled(True)
+			self.coord_3_x.setEnabled(True)
+			self.coord_3_y.setEnabled(True)
+			self.coord_4_x.setEnabled(True)
+			self.coord_4_y.setEnabled(True)
+
+	def on_click_clear(self):
+		self.btn_save.setEnabled(False)
+		self.coord_1_x.clear()
+		self.coord_1_y.clear()
+		self.coord_2_x.clear()
+		self.coord_2_y.clear()
+		self.coord_3_x.clear()
+		self.coord_3_y.clear()
+		self.coord_4_x.clear()
+		self.coord_4_y.clear()
+
+	def on_click_save(self):
+		self.crop_coords.append(QPoint(int("0" + self.coord_1_x.text()),int("0" + self.coord_1_y.text())))
+		self.crop_coords.append(QPoint(int("0" + self.coord_2_x.text()),int("0" + self.coord_2_y.text())))
+		self.crop_coords.append(QPoint(int("0" + self.coord_3_x.text()),int("0" + self.coord_3_y.text())))
+		self.crop_coords.append(QPoint(int("0" + self.coord_4_x.text()),int("0" + self.coord_4_y.text())))
+		self.crop_coordinates.emit(self.crop_coords)
+		self.hide()
+
+	def handle_processed_video_click(self, event):
+		if(self.previewOriginalWidth > 0 and self.previewOriginalHeight > 0):
+			xbound = self.previewImage.width() - self.previewImage.pixmap().width()
+			xratio = self.previewOriginalWidth / self.previewImage.pixmap().width()
+			
+			ybound = self.previewImage.height() - self.previewImage.pixmap().height()
+			yratio = self.previewOriginalHeight / self.previewImage.pixmap().height()
+
+			originX = int((event.position().x() - xbound/2) * xratio)
+			originY = int((event.position().y() - ybound/2) * yratio)
+
+			if(self.coord_1_x.text() == "" and self.coord_1_y.text() == ""):
+				self.coord_1_x.setText(str(originX))
+				self.coord_1_y.setText(str(originY))
+			elif(self.coord_2_x.text() == "" and self.coord_2_y.text() == ""):
+				self.coord_2_x.setText(str(originX))
+				self.coord_2_y.setText(str(originY))
+			elif(self.coord_3_x.text() == "" and self.coord_3_y.text() == ""):
+				self.coord_3_x.setText(str(originX))
+				self.coord_3_y.setText(str(originY))
+			elif(self.coord_4_x.text() == "" and self.coord_4_y.text() == ""):
+				self.coord_4_x.setText(str(originX))
+				self.coord_4_y.setText(str(originY))
+				self.btn_save.setEnabled(True)
 
 class MainWindow(QtWidgets.QMainWindow):
 	def __init__(self, parent=None):
@@ -60,7 +194,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		self.main_widget = Window(self)
 		self.setCentralWidget(self.main_widget)
-		self.statusBar()
+		self.statusBar().addWidget(QtWidgets.QLabel("Application running."))
 		self.setWindowTitle('Score OCR and TV Graphic Control')
 		self.resize(1000,400)
 		self.show()
@@ -81,24 +215,23 @@ class OcrCoordinateGui():
 		self.id = id(self)
 		self.name = name
 		self.value = ""
+		self.in_tl_edit = False
+		self.in_br_edit = False
 		self.name_field = QtWidgets.QLineEdit(self.name)
 		self.tl_coord_field_x = QtWidgets.QLineEdit("")
 		self.tl_coord_field_y = QtWidgets.QLineEdit("")
 		self.br_coord_field_x = QtWidgets.QLineEdit("")
 		self.br_coord_field_y = QtWidgets.QLineEdit("")
-		self.lbl_width = QtWidgets.QLabel("0")
-		self.lbl_height = QtWidgets.QLabel("0")
+		self.btn_edit = QtWidgets.QPushButton("")
+		self.btn_edit.setIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+		self.btn_remove = QtWidgets.QPushButton("")
+		self.btn_remove.setIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_BrowserStop))
 		self.lbl_value = QtWidgets.QLabel("")
 
-		self.tl_coord_field_x.textChanged.connect(self.on_update)
-		self.br_coord_field_x.textChanged.connect(self.on_update)
-		self.tl_coord_field_y.textChanged.connect(self.on_update)
-		self.br_coord_field_y.textChanged.connect(self.on_update)
+		self.btn_edit.clicked.connect(self.on_edit)
 
 		self.name_field.textChanged.connect(self.on_name_update)
 
-		self.lbl_width.setAlignment(Qt.AlignCenter)
-		self.lbl_height.setAlignment(Qt.AlignCenter)
 		self.lbl_value.setAlignment(Qt.AlignCenter)
 		self.tl_coord_field_x.setValidator(QIntValidator()) # Require integer pixel input
 		self.tl_coord_field_y.setValidator(QIntValidator())
@@ -108,6 +241,11 @@ class OcrCoordinateGui():
 		self.tl_coord_field_y.setMaxLength(3)
 		self.br_coord_field_x.setMaxLength(3)
 		self.br_coord_field_y.setMaxLength(3)
+
+		self.tl_coord_field_x.setEnabled(False)
+		self.tl_coord_field_y.setEnabled(False)
+		self.br_coord_field_x.setEnabled(False)
+		self.br_coord_field_y.setEnabled(False)
 
 
 		if coords is not None:
@@ -119,8 +257,8 @@ class OcrCoordinateGui():
 		self.tl_coord_field_y.deleteLater()
 		self.br_coord_field_x.deleteLater()
 		self.br_coord_field_y.deleteLater()
-		self.lbl_width.deleteLater()
-		self.lbl_height.deleteLater()
+		self.btn_edit.deleteLater()
+		self.btn_remove.deleteLater()
 		self.lbl_value.deleteLater()
 		print("Destructor called.")
 
@@ -128,7 +266,7 @@ class OcrCoordinateGui():
 		return [self.tl_coord_field_x.text(), self.tl_coord_field_y.text(), self.br_coord_field_x.text(), self.br_coord_field_y.text()]
 	
 	def get_coords(self):
-		return [int('0' + self.tl_coord_field_x.text()), int('0' + self.tl_coord_field_y.text()), int(self.br_coord_field_x.text()), int(self.br_coord_field_y.text())]
+		return [int('0' + self.tl_coord_field_x.text()), int('0' + self.tl_coord_field_y.text()), int('0' + self.br_coord_field_x.text()), int('0' + self.br_coord_field_y.text())]
 	
 	def set_coords(self, coords):
 		self.tl_coord_field_x.setText(coords[0])
@@ -136,12 +274,33 @@ class OcrCoordinateGui():
 		self.br_coord_field_x.setText(coords[2])
 		self.br_coord_field_y.setText(coords[3])
 
-	def on_update(self, value):
-		self.lbl_height.setText(str(int('0' + self.br_coord_field_y.text()) - int('0' +  self.tl_coord_field_y.text())))
-		self.lbl_width.setText(str(int('0' + self.br_coord_field_x.text()) - int('0' +  self.tl_coord_field_x.text())))
-
 	def on_name_update(self, value):
 		self.name = self.name_field.text()
+
+	def on_edit(self):
+		if not self.in_tl_edit and not self.in_br_edit:
+			self.in_tl_edit = True
+			self.tl_coord_field_x.setEnabled(True)
+			self.tl_coord_field_y.setEnabled(True)
+		elif self.in_tl_edit:
+			self.in_br_edit = True
+			self.in_tl_edit = False
+			self.tl_coord_field_x.setEnabled(False)
+			self.tl_coord_field_y.setEnabled(False)
+			self.br_coord_field_x.setEnabled(True)
+			self.br_coord_field_y.setEnabled(True)
+		elif self.in_br_edit:
+			self.in_br_edit = False
+			self.br_coord_field_x.setEnabled(False)
+			self.br_coord_field_y.setEnabled(False)
+
+	def set_tl_coord(self, x, y):
+		self.tl_coord_field_x.setText(str(x))
+		self.tl_coord_field_y.setText(str(y))
+
+	def set_br_coord(self, x, y):
+		self.br_coord_field_x.setText(str(x))
+		self.br_coord_field_y.setText(str(y))
 
 class Window(QtWidgets.QWidget):
 	def __init__(self, parent):
@@ -162,21 +321,44 @@ class Window(QtWidgets.QWidget):
 
 		self.previewZoomLevel = 0
 
+		self.previewOriginalWidth = 0
+		self.previewOriginalHeight = 0
+
+		self.editMode = False
+
 		#construct the GUI
-		grid = QtWidgets.QGridLayout()
+		self.main_layout = QtWidgets.QVBoxLayout()
+		self.top_layout = QtWidgets.QHBoxLayout()
+		self.main_grid_layout = QtWidgets.QGridLayout()
+		self.main_grid_layout.setColumnStretch(0,100)
+		self.main_grid_layout.setColumnStretch(1,50)
+		self.main_grid_layout.setHorizontalSpacing(10)
+		self.main_grid_layout.setVerticalSpacing(20)
+
 		self.g_ocr_group = self.ui_create_ocr_group()
-		grid.addWidget(self.g_ocr_group, 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.ui_create_camera_preview_group(), 0, 0, 4, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.ui_create_parameters_group(), 4, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
-		grid.addWidget(self.ui_create_debug_group(), 4, 1, 2, 1) # MUST BE HERE, initializes all QObject lists
+		self.main_grid_layout.addWidget(self.g_ocr_group, 0, 1, 4, 1) # MUST BE HERE, initializes all QObject lists
+		self.main_grid_layout.addWidget(self.ui_create_camera_preview_group(), 0, 0, 4, 1) # MUST BE HERE, initializes all QObject lists
+		self.main_grid_layout.addWidget(self.ui_create_parameters_group(), 4, 0, 2, 1) # MUST BE HERE, initializes all QObject lists
+		self.main_grid_layout.addWidget(self.ui_create_debug_group(), 4, 1, 2, 1) # MUST BE HERE, initializes all QObject lists
 
-		grid.setColumnStretch(0,100)
-		grid.setColumnStretch(1,50)
+		self.testBtn1 = QtWidgets.QPushButton("1. Select Inputs")
+		self.testBtn2 = QtWidgets.QPushButton("2. Tune OCR")
+		self.testBtn3 = QtWidgets.QPushButton("3. Configure Outputs")
 
-		grid.setHorizontalSpacing(10)
-		grid.setVerticalSpacing(10)
+		self.top_layout.addWidget(self.testBtn1)
+		self.top_layout.addWidget(self.testBtn2)
+		self.top_layout.addWidget(self.testBtn3)
 
-		self.setLayout(grid)
+		self.main_layout.addLayout(self.top_layout)
+		self.main_layout.addLayout(self.main_grid_layout)
+
+		
+
+		self.setLayout(self.main_layout)
+
+		#initialize crop window
+		self.ui_crop_window = CropWindow()
+		self.ui_crop_window.crop_coordinates.connect(self.handler_autocrop_save)
 
 		#initialize worker threads
 		self.init_ocr_worker()
@@ -189,10 +371,32 @@ class Window(QtWidgets.QWidget):
 			self.previewZoomLevel += 1	
 
 	def handle_preview_video_click(self, event):
+		pass
 		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
 
 	def handle_processed_video_click(self, event):
-		print("Clicked on. X: ", event.position().x(), ", Y:", event.position().y())
+		xbound = self.previewImageProcessed.width() - self.previewImageProcessed.pixmap().width()
+		xratio = self.previewOriginalWidth / self.previewImageProcessed.pixmap().width()
+		
+		ybound = self.previewImageProcessed.height() - self.previewImageProcessed.pixmap().height()
+		yratio = self.previewOriginalHeight/ self.previewImageProcessed.pixmap().height()
+
+		originX = int((event.position().x() - xbound/2) * xratio)
+		originY = int((event.position().y() - ybound/2) * yratio)
+
+		print("Clicked on. X: ", event.position().x()," (", originX ,"), Y:", event.position().y()," (", originY ,")")		
+
+		try:
+			cell = next(cell for cell in self.g_ocr_coords if cell.in_tl_edit == True)
+			cell.set_tl_coord(originX, originY)
+		except Exception as e:
+			print(e)
+
+		try:
+			cell = next(cell for cell in self.g_ocr_coords if cell.in_br_edit == True)
+			cell.set_br_coord(originX, originY)
+		except Exception as e:
+			print(e)
 
 	def closeEvent(self, event):
 		if self.ocr_worker._isRunning:
@@ -237,6 +441,7 @@ class Window(QtWidgets.QWidget):
 
 	def start_ocr_worker(self):
 		if self.ocr_worker is not None:
+			self.parent().statusBar().showMessage("OCR started", 2000)
 			self.ocr_worker.run()
 
 	def pause_ocr_worker(self):
@@ -251,8 +456,16 @@ class Window(QtWidgets.QWidget):
 	def handler_ocr_preview_image(self, QImageFrame):
 		_pixmapRaw = QPixmap.fromImage(QImageFrame[0])
 		_pixmapProcessed = QPixmap.fromImage(QImageFrame[1])
+
+		self.previewOriginalWidth = _pixmapProcessed.width()
+		self.previewOriginalHeight = _pixmapProcessed.height()
+
 		self.previewImageRaw.setPixmap(_pixmapRaw.scaled(300, 300, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 		self.previewImageProcessed.setPixmap(_pixmapProcessed.scaled(self.previewImageProcessed.width(), self.previewImageProcessed.height(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+
+		if self.ui_crop_window.isVisible():
+			self.ui_crop_window.setOriginalPreviewSize(self.previewOriginalWidth, self.previewOriginalHeight)
+			self.ui_crop_window.previewImage.setPixmap(_pixmapRaw.scaled(self.ui_crop_window.previewImage.width(), self.ui_crop_window.previewImage.height(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
 	@Slot(object)
 	def handler_ocr_result_groups(self, digit_groups):
@@ -261,6 +474,11 @@ class Window(QtWidgets.QWidget):
 			self.g_ocr_coords[i].value = digitgrp.value
 
 		self.sendCommandToBrowser()
+
+	@Slot(object)
+	def handler_autocrop_save(self, crop_coords):
+
+		print(crop_coords)
 
 	def get_ocr_coodinates_list(self):
 		response = {}
@@ -288,6 +506,7 @@ class Window(QtWidgets.QWidget):
 		self.update_state()
 
 	def update_sliders(self):
+		self.rotateSlider.setValue(int(self.SCrotation.text()))
 		self.skewXSlider.setValue(int(self.SCskewx.text()))
 		self.skewYSlider.setValue(int(self.SCskewy.text()))
 		self.threshSlider.setValue(int(self.SCthreshold.text()))
@@ -296,7 +515,7 @@ class Window(QtWidgets.QWidget):
 		self.update_state()
 
 	def update_state(self):
-
+		self.SCrotation.setText(str(self.rotateSlider.value()))
 		self.SCskewx.setText(str(self.skewXSlider.value()))
 		self.SCskewy.setText(str(self.skewYSlider.value()))
 		self.SCthreshold.setText(str(self.threshSlider.value()))
@@ -340,6 +559,23 @@ class Window(QtWidgets.QWidget):
 			print("Unable to update OCR worker params. OCR probably not running.")
 			pass
 
+	def handler_autocrop_enabled(self, event):
+		if event:
+			logging.info("Autocrop enabled")
+			self.btn_autocrop_set.setEnabled(True)
+			self.edit_autocrop_coords.setEnabled(True)
+		else:
+			logging.info("Autocrop disabled")
+			self.btn_autocrop_set.setEnabled(False)
+			self.edit_autocrop_coords.setEnabled(False)
+
+	def handler_autocrop_btn(self, event):
+		logging.info("Autocrop btn pushed.")
+		if self.ui_crop_window.isVisible():
+			self.ui_crop_window.hide()
+		else:
+			self.ui_crop_window.show()
+
 	def ui_update_ocr_group(self):
 
 		def add_update_widget(grid, widget, row, col):
@@ -350,7 +586,7 @@ class Window(QtWidgets.QWidget):
 
 		self.g_ocr_group.setStyleSheet(GroupBoxStyleSheet)
 
-		grid = self.g_ocr_group.layout()
+		grid = self.g_ocr_group.layout().itemAt(1)
 
 		for index, param in enumerate(self.g_ocr_coords):
 			row_index = index + 2
@@ -366,9 +602,8 @@ class Window(QtWidgets.QWidget):
 			add_update_widget(grid, param.tl_coord_field_y, row_index, 2)
 			add_update_widget(grid, param.br_coord_field_x, row_index, 3)
 			add_update_widget(grid, param.br_coord_field_y, row_index, 4)
-			add_update_widget(grid, param.lbl_width, row_index, 5)
-			add_update_widget(grid, param.lbl_height, row_index, 6)
-			add_update_widget(grid, param.lbl_value, row_index, 7)
+			add_update_widget(grid, param.btn_edit, row_index, 5)
+			add_update_widget(grid, param.btn_remove, row_index, 6)
 		
 		grid.setRowStretch(grid.rowCount(), 1)
 		grid.setColumnMinimumWidth(1, 30)
@@ -377,8 +612,11 @@ class Window(QtWidgets.QWidget):
 		grid.setColumnMinimumWidth(4, 30)
 
 	def ui_create_ocr_group(self):
-		groupBox = QtWidgets.QGroupBox("Bounding Boxes")
+		groupBox = QtWidgets.QGroupBox("Digit definition")
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
+
+		main_layout = QtWidgets.QVBoxLayout()
+		top_layout = QtWidgets.QHBoxLayout()
 
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(10)
@@ -393,8 +631,8 @@ class Window(QtWidgets.QWidget):
 		self.remove_ocr_digit_button = QtWidgets.QPushButton("Remove digit")
 		self.remove_ocr_digit_button.clicked.connect(self.handler_digit_remove)
 
-		grid.addWidget(self.add_ocr_digit_button, 0, 5)
-		grid.addWidget(self.remove_ocr_digit_button, 0 , 6)
+		top_layout.addWidget(self.add_ocr_digit_button)
+		top_layout.addWidget(self.remove_ocr_digit_button)
 
 		_tlLabel = QtWidgets.QLabel("Top-Left")
 		_brLabel = QtWidgets.QLabel("Bottom-Right")
@@ -403,40 +641,46 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(_tlLabel, 0, 1, 1, 2)
 		grid.addWidget(_brLabel, 0, 3, 1, 2)
 
-		grid.addWidget(QtWidgets.QLabel(""), 1, 0)
+		grid.addWidget(QtWidgets.QLabel("Name"), 1, 0)
 		grid.addWidget(QtWidgets.QLabel("X"), 1, 1, alignment=Qt.AlignHCenter)
 		grid.addWidget(QtWidgets.QLabel("Y"), 1, 2, alignment=Qt.AlignHCenter)
 		grid.addWidget(QtWidgets.QLabel("X"), 1, 3, alignment=Qt.AlignHCenter)
 		grid.addWidget(QtWidgets.QLabel("Y"), 1, 4, alignment=Qt.AlignHCenter)
-		grid.addWidget(QtWidgets.QLabel("Width"), 1, 5, alignment=Qt.AlignHCenter)
-		grid.addWidget(QtWidgets.QLabel("Height"), 1, 6, alignment=Qt.AlignHCenter)
+		grid.addWidget(QtWidgets.QLabel(""), 1, 5, alignment=Qt.AlignHCenter)
+		grid.addWidget(QtWidgets.QLabel(""), 1, 6, alignment=Qt.AlignHCenter)
 		grid.addWidget(QtWidgets.QLabel("OCR"), 1, 7, alignment=Qt.AlignHCenter)
 
 		for index, param in enumerate(self.g_ocr_coords):
 			row_index = index + 2
 
 			param.name_field.editingFinished.connect(self.update_state)
-			param.tl_coord_field_x.editingFinished.connect(self.update_state) # On change in X or Y, update width + height
-			param.tl_coord_field_y.editingFinished.connect(self.update_state)
-			param.br_coord_field_x.editingFinished.connect(self.update_state)
-			param.br_coord_field_y.editingFinished.connect(self.update_state)
+			param.tl_coord_field_x.textChanged.connect(self.update_state) # On change in X or Y, update width + height
+			param.tl_coord_field_y.textChanged.connect(self.update_state)
+			param.br_coord_field_x.textChanged.connect(self.update_state)
+			param.br_coord_field_y.textChanged.connect(self.update_state)
 
 			grid.addWidget(param.name_field, row_index, 0)
 			grid.addWidget(param.tl_coord_field_x, row_index, 1)
 			grid.addWidget(param.tl_coord_field_y, row_index, 2)
 			grid.addWidget(param.br_coord_field_x, row_index, 3)
 			grid.addWidget(param.br_coord_field_y, row_index, 4)
-			grid.addWidget(param.lbl_width, row_index, 5)
-			grid.addWidget(param.lbl_height, row_index, 6)
+			grid.addWidget(param.btn_edit, row_index, 5)
+			grid.addWidget(param.btn_remove, row_index, 6)
 			grid.addWidget(param.lbl_value, row_index, 7)
 
 		grid.setRowStretch(grid.rowCount(), 1)
+		grid.setColumnMinimumWidth(0, 100)
 		grid.setColumnMinimumWidth(1, 30)
 		grid.setColumnMinimumWidth(2, 30)
 		grid.setColumnMinimumWidth(3, 30)
 		grid.setColumnMinimumWidth(4, 30)
+		grid.setColumnMinimumWidth(5, 30)
+		grid.setColumnMinimumWidth(6, 30)
 
-		groupBox.setLayout(grid)
+		main_layout.addLayout(top_layout)
+		main_layout.addLayout(grid)
+
+		groupBox.setLayout(main_layout)
 		return groupBox
 
 	def ui_create_parameters_group(self):
@@ -455,6 +699,11 @@ class Window(QtWidgets.QWidget):
 		self.SCvideoCaptureIndex = QtWidgets.QLineEdit(self.qsettings.value("SCvideoCaptureIndex", '0'))
 		self.SCwebsocketAddress = QtWidgets.QLineEdit(self.qsettings.value("SCwebsocketAddress", 'ws://localhost:9000'))
 		self.SCwaitKey = QtWidgets.QLineEdit(self.qsettings.value("SCwaitKey", '300'))
+
+		self.rotateSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+		self.rotateSlider.setMinimum(-45)
+		self.rotateSlider.setMaximum(45)
+		self.rotateSlider.setValue(int(self.qsettings.value("SCrotation", "0")))
 
 		self.skewXSlider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
 		self.skewXSlider.setMinimum(-45)
@@ -481,8 +730,16 @@ class Window(QtWidgets.QWidget):
 		self.dilateSlider.setMaximum(25)
 		self.dilateSlider.setValue(int(self.qsettings.value("SCdilate", "0")))
 
-		self.chkAutocrop = QtWidgets.QCheckBox()
+		self.chkAutocrop = QtWidgets.QCheckBox("Autocrop enabled")
 		self.chkAutocrop.setCheckState(Qt.CheckState.Unchecked)
+		self.chkAutocrop.clicked.connect(self.handler_autocrop_enabled)
+
+		self.btn_autocrop_set = QtWidgets.QPushButton("Set coords")
+		self.btn_autocrop_set.setEnabled(False)
+		self.btn_autocrop_set.clicked.connect(self.handler_autocrop_btn)
+
+		self.edit_autocrop_coords = QtWidgets.QLineEdit(self.qsettings.value("SCautocrop", ''))
+		self.edit_autocrop_coords.setEnabled(False)
 
 		grid = QtWidgets.QGridLayout()
 		grid.setHorizontalSpacing(10)
@@ -491,10 +748,10 @@ class Window(QtWidgets.QWidget):
 
 		#compose the grid
 		layoutRow = 0
-		grid.addWidget(QtWidgets.QLabel("Autocrop enabled"), layoutRow, 0, 1, 1)
-
-		layoutRow += 1
 		grid.addWidget(self.chkAutocrop, layoutRow, 0)
+		grid.addWidget(self.btn_autocrop_set, layoutRow, 1)
+		grid.addWidget(QtWidgets.QLabel("Autocrop coords"), layoutRow, 2)
+		grid.addWidget(self.edit_autocrop_coords, layoutRow, 3, 1, 3)
 
 		layoutRow += 1
 		grid.addWidget(QtWidgets.QLabel("Rotation"), layoutRow, 0, 1, 1)
@@ -513,7 +770,7 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(self.SCdilate, layoutRow, 5, 1, 1)
 
 		layoutRow += 1
-		grid.addWidget(QtWidgets.QLabel("WaitKey"), layoutRow, 0)
+		grid.addWidget(self.rotateSlider, layoutRow, 0)
 		grid.addWidget(self.skewXSlider, layoutRow, 1)
 		grid.addWidget(self.skewYSlider, layoutRow, 2)
 		grid.addWidget(self.threshSlider, layoutRow, 3)
@@ -521,13 +778,14 @@ class Window(QtWidgets.QWidget):
 		grid.addWidget(self.dilateSlider, layoutRow, 5)
 
 		layoutRow += 1
-		grid.addWidget(self.SCwaitKey, layoutRow, 0)
-		grid.addWidget(QtWidgets.QLabel("Top Crop"), layoutRow, 4, 1, 1)
-		grid.addWidget(QtWidgets.QLabel("Left Crop"), layoutRow, 5, 1, 1)
+		grid.addWidget(QtWidgets.QLabel("Top Crop"), layoutRow, 0)
+		grid.addWidget(QtWidgets.QLabel("Left Crop"), layoutRow, 1)
+		grid.addWidget(QtWidgets.QLabel("WaitKey"), layoutRow, 5)
 
 		layoutRow += 1
-		grid.addWidget(self.SCcropTop, layoutRow, 4)
-		grid.addWidget(self.SCcropLeft, layoutRow, 5)
+		grid.addWidget(self.SCcropTop, layoutRow, 0)
+		grid.addWidget(self.SCcropLeft, layoutRow, 1)
+		grid.addWidget(self.SCwaitKey, layoutRow, 5)
 
 		layoutRow += 1
 		grid.addWidget(QtWidgets.QLabel("Source"), layoutRow, 0, 1, 1)
@@ -551,6 +809,7 @@ class Window(QtWidgets.QWidget):
 		self.SCcropLeft.editingFinished.connect(self.update_state)
 		self.SCcropTop.editingFinished.connect(self.update_state)
 
+		self.rotateSlider.valueChanged.connect(self.update_state)
 		self.skewXSlider.valueChanged.connect(self.update_state)
 		self.skewYSlider.valueChanged.connect(self.update_state)
 		self.threshSlider.valueChanged.connect(self.update_state)
@@ -572,7 +831,7 @@ class Window(QtWidgets.QWidget):
 		self.pauseSCOCRButton = QtWidgets.QPushButton("Pause OCR")
 		self.terminateSCOCRButton = QtWidgets.QPushButton("Stop OCR")
 
-		self.previewImageRaw = QtWidgets.QLabel("")
+		self.previewImageRaw = QtWidgets.QLabel("Camera raw feed not available.")
 		self.previewImageRaw.mousePressEvent = self.handle_preview_video_click
 		self.previewImageRaw.mouseReleaseEvent = self.handle_preview_video_click
 
@@ -584,9 +843,6 @@ class Window(QtWidgets.QWidget):
 		grid.setHorizontalSpacing(10)
 		grid.setVerticalSpacing(5)
 
-		_img = QPixmap.fromImage(QImage(200, 113, QImage.Format_RGB888))
-		_img.fill(0)
-		self.previewImageRaw.setPixmap(_img)
 		self.previewImageRaw.setAlignment(Qt.AlignCenter)
 
 		grid.addWidget(self.previewImageRaw, 0, 0, 1, 3)
@@ -602,7 +858,7 @@ class Window(QtWidgets.QWidget):
 		groupBox.setStyleSheet(GroupBoxStyleSheet)
 
 		#define widgets
-		self.previewImageProcessed = QtWidgets.QLabel("")
+		self.previewImageProcessed = QtWidgets.QLabel("Preview feed not available.")
 		self.previewImageProcessed.wheelEvent = self.handle_preview_video_zoom
 		self.previewImageProcessed.mousePressEvent = self.handle_processed_video_click
 		self.previewImageProcessed.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
@@ -611,9 +867,6 @@ class Window(QtWidgets.QWidget):
 		grid.setHorizontalSpacing(5)
 		grid.setVerticalSpacing(5)
 
-		_img = QPixmap.fromImage(QImage(200, 113, QImage.Format_RGB888))
-		_img.fill(0)
-		self.previewImageProcessed.setPixmap(_img)
 		self.previewImageProcessed.setAlignment(Qt.AlignCenter)
 
 		grid.addWidget(self.previewImageProcessed, 1, 0)
@@ -622,6 +875,9 @@ class Window(QtWidgets.QWidget):
 		return groupBox
 
 if __name__ == '__main__':
-	app = QtWidgets.QApplication(sys.argv)
+	app = QtWidgets.QApplication(sys.argv + ['-platform', 'windows:darkmode=[1|2]'] )
+	
+	qdarktheme.setup_theme("dark", corner_shape="sharp")
+
 	ex = MainWindow()
 	sys.exit(app.exec())
